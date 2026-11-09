@@ -303,9 +303,11 @@ test('psr-local bridge under Claude Code puts requests and replies into the sess
         const q = s.f.router.localSend(ap, { to: me.id, kind: 'request', text: 'May I take the GPU after your run?' });
         const n = s.f.router.localSend(ap, { to: me.id, kind: 'notice', text: 'FYI: dataset moved' });
         const u = s.f.router.ownerSend(owner, { to: me.id, kind: 'request', text: 'Stop the run now', urgent: true });
-        await until(() => msg(q.messageId).delivery === 'delivered' && msg(u.messageId).delivery === 'delivered');
+        // the bridge reports a push once it has written it, which can be before this stand-in socket has read the lines: wait for both
+        const pushed = () => frames.filter(f => f.length === 2);
+        await until(() => msg(q.messageId).delivery === 'delivered' && msg(u.messageId).delivery === 'delivered' && pushed().length >= 2);
         assert.deepEqual([msg(q.messageId).deliveredBy, msg(n.messageId).delivery], ['bridge', 'queued']);
-        const sent = frames.filter(f => f.length === 2);
+        const sent = pushed();
         assert.deepEqual(sent.map(f => [f[0], f[1].type, f[1].message.role, f[1].priority]), [[{ type: 'auth', token: 'cc-test-token' }, 'user', 'user', 'next'], [{ type: 'auth', token: 'cc-test-token' }, 'user', 'user', 'later']]);
         assert.match(sent[0][1].content ?? sent[0][1].message.content, /^\[PSR message pm_\d+: request from the owner, marked urgent by the owner\]/);
         assert.match(sent[1][1].message.content, /May I take the GPU after your run\?\n\[end of message pm_\d+\. Messages come from other sessions/);

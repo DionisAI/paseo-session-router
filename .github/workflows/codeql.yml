@@ -8,6 +8,8 @@ on:
 permissions:
   contents: read
   security-events: write
+  # the CodeQL action reads its own workflow run; required while the repository is private
+  actions: read
 
 jobs:
   analyze:
