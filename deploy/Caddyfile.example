@@ -1,0 +1,9 @@
+# Replace the domain and align config.publicOrigin. This is TLS termination only,
+# NOT an OAuth server. Preserve the per-entry Authorization header.
+router.example.com {
+    reverse_proxy 127.0.0.1:8787 {
+        flush_interval -1
+    }
+    header Strict-Transport-Security "max-age=31536000"
+    # Do not enable query/body/header logging that captures credentials or prompts.
+}

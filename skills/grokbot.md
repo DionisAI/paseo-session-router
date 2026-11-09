@@ -1,0 +1,2 @@
+# Grokbot entry
+Use the common session-control skill. Configure a dedicated Grokbot credential with the Remote MCP endpoint `/mcp` when your actual client can supply its authorization header. Alternatively run the stdio bridge on an explicitly authorized machine. Read → submit a harmless task → read the result before marking this integration accepted. No Grokbot account was accessed while building this package. Never use the web/admin credential as a convenience.

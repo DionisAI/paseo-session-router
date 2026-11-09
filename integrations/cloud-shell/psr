@@ -1,0 +1,24 @@
+#!/bin/sh
+# psr: call the Paseo Session Router from a cloud computer that has a shell and curl but no MCP client.
+#   psr tools                    list the tools available to this credential, with their JSON input schemas
+#   psr <tool> ['<json>' | -]    call one tool; the JSON body defaults to {} and - reads it from stdin
+# The credential stays in a 0600 header file, never on the command line, in a URL or in the conversation,
+# and is only ever sent over HTTPS to PSR_URL (no other protocol, no redirects).
+set -eu
+set -f
+URL="${PSR_URL:-$(cat "${PSR_URL_FILE:-$HOME/.config/psr/url}" 2>/dev/null || true)}"
+[ -n "$URL" ] || { echo "psr: set PSR_URL to your Router (https://…), or run install.sh, which saves it" >&2; exit 2; }
+HEADER_FILE="${PSR_HEADER_FILE:-$HOME/.config/psr/auth-header}"
+case "$URL" in https://*) ;; *) echo "psr: PSR_URL must be https://…" >&2; exit 2 ;; esac
+[ -r "$HEADER_FILE" ] || { echo "psr: missing $HEADER_FILE (run the setup step that stores the token)" >&2; exit 2; }
+[ $# -ge 1 ] || { echo "usage: psr tools | psr <tool> ['<json>' | -]" >&2; exit 2; }
+tool=$1
+if [ "$tool" = tools ]; then
+    exec curl -sS -m 30 --proto =https --max-redirs 0 -H @"$HEADER_FILE" "$URL/v1/tools"
+fi
+case "$tool" in psr_[a-z_]*) ;; *) echo "psr: tool names look like psr_list_sessions (see: psr tools)" >&2; exit 2 ;; esac
+if [ $# -ge 2 ]; then body=$2; else body='{}'; fi
+if [ "$body" = - ]; then
+    exec curl -sS -m 70 --proto =https --max-redirs 0 -H @"$HEADER_FILE" -H 'content-type: application/json' --data-binary @- "$URL/v1/tools/$tool"
+fi
+exec curl -sS -m 70 --proto =https --max-redirs 0 -H @"$HEADER_FILE" -H 'content-type: application/json' --data-binary "$body" "$URL/v1/tools/$tool"

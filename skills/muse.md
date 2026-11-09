@@ -1,0 +1,4 @@
+# Muse entry
+Use the common session-control skill. Provide the connector with `docs/openapi.json`, the Router HTTPS base URL and a dedicated Muse credential if that actual connector supports authenticated API actions. The tool schemas are also available at `/v1/tools`, and an MCP route exists for clients that support it. This package does not presume which product named Muse the user has or that arbitrary MCP/OpenAPI import is available. Validate read → harmless submit → read-result on the real client. Muse as a chat entry is distinct from a native Muse Code provider on a Paseo host.
+
+When Muse is Meta's cloud computer (a shell, no MCP connector): join it to the Router's tailnet, run the cloud-shell installer (`curl -fsSL https://<router>/integrations/cloud-shell/install.sh -o psr-install.sh && sh psr-install.sh`), paste the Muse credential at the hidden prompt, then tell Muse to read `~/.config/psr/AGENT.md` and use the `psr` command.

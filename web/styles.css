@@ -1,0 +1,42 @@
+/* Sign-in and toasts. Everything after sign-in (總覽, 機器, 任務) is styled by park.css. */
+:root {
+  color-scheme: light dark;
+  --bg-top: #5aaee8; --bg-low: #c4e6f6;
+  --paper: #fbe7b8; --paper-2: #f3d395;
+  --ink: #4a2a12; --muted: #8b5d33; --line: #ddb06e; --accent: #5f9e2f;
+  --frame: 0 0 0 3px #5a2c0d, inset 0 0 0 4px #cf7f30, inset 0 0 0 6px #8a4718, 5px 6px 0 2px rgb(50 25 6 / .28);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg-top: #121a38; --bg-low: #2a3864; }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; color: var(--ink);
+  font-family: "PingFang TC", "PingFang SC", "Hiragino Sans", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+  background: linear-gradient(180deg, var(--bg-top), var(--bg-low) 62%) fixed;
+}
+.login { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
+.login[hidden] { display: none; }
+.login-card {
+  width: min(400px, 100%); padding: 32px 30px 24px; background: var(--paper); border-radius: 5px; box-shadow: var(--frame);
+}
+.login-mark { width: 48px; height: 48px; border-radius: 15px; display: grid; place-items: center; background: oklch(90% 0.06 150); color: oklch(38% 0.09 155); }
+.login-mark svg { width: 30px; height: 30px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; }
+.login-mark svg circle:first-child { fill: currentColor; }
+.login h1 { margin: 18px 0 6px; font-size: 26px; letter-spacing: .02em; }
+.login-sub { margin: 0 0 22px; font-size: 13.5px; line-height: 1.7; color: var(--muted); }
+#login-form { display: grid; gap: 8px; }
+#login-form label { font-size: 12.5px; color: var(--muted); }
+#token { font: inherit; font-size: 14px; padding: 11px 13px; border-radius: 3px; border: 2px solid var(--line); background: var(--paper-2); color: var(--ink); }
+#token:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.login-go { margin-top: 6px; font: inherit; font-size: 14.5px; font-weight: 650; padding: 11px; border: 0; border-radius: 3px; background: #6aa834; color: #fffbea; text-shadow: 1px 1px 0 #2f5a14; box-shadow: 0 0 0 2px #2f5a14, inset 0 -3px 0 #4c8a22, inset 0 2px 0 #8ccb52; cursor: pointer; }
+.login-go:hover { filter: brightness(1.06); }
+#login-error { min-height: 1.4em; margin: 10px 0 0; font-size: 12.5px; color: oklch(56% 0.18 28); }
+/* above 總控臺 (z-index 40), so results and errors are always seen */
+#toast {
+  position: fixed; bottom: 24px; right: 24px; max-width: min(460px, calc(100vw - 48px)); z-index: 60;
+  padding: 14px 20px; border-radius: 5px; background: var(--paper); color: var(--ink);
+  box-shadow: var(--frame); font-size: 13.5px; line-height: 1.6;
+}
+#toast[hidden] { display: none; }
+#toast.error { background: #ffd9c4; color: #7a2a12; }

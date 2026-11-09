@@ -1,0 +1,214 @@
+{
+  "mode": "live",
+  "listen": "127.0.0.1",
+  "port": 8787,
+  "dataDir": "/var/lib/paseo-session-router",
+  "allowedOrigins": [],
+  "hosts": [
+    {
+      "id": "gpu1",
+      "label": "Research server"
+    },
+    {
+      "id": "dev2",
+      "label": "Development server"
+    }
+  ],
+  "daemons": [
+    {
+      "id": "gpu-research",
+      "hostId": "gpu1",
+      "label": "research",
+      "incarnation": "gpu1-research-initial",
+      "adapter": "paseo",
+      "pairingEnv": "PASEO_GPU1_PAIRING",
+      "mappings": [
+        {
+          "cwd": "/srv/hft",
+          "projectId": "hft",
+          "workspaceId": "hft-main",
+          "mutationDomainId": "hft-main-storage",
+          "releasePolicy": "on_turn_end",
+          "workerId": "eth-mm"
+        }
+      ],
+      "agentChannel": {
+        "mode": "observed"
+      }
+    },
+    {
+      "id": "dev-app",
+      "hostId": "dev2",
+      "label": "development",
+      "incarnation": "dev2-app-initial",
+      "adapter": "paseo",
+      "url": "ws://127.0.0.1:17672/ws",
+      "identityProbe": {
+        "command": "/usr/bin/ssh",
+        "args": [
+          "-o",
+          "BatchMode=yes",
+          "-o",
+          "StrictHostKeyChecking=yes",
+          "dev2",
+          "cat",
+          "/home/ubuntu/.config/psr/app.identity"
+        ],
+        "expectedValue": "dev2-app-initial",
+        "timeoutMs": 5000
+      },
+      "mappings": [
+        {
+          "cwd": "/srv/router",
+          "projectId": "router",
+          "workspaceId": "router-main",
+          "mutationDomainId": "router-main-storage",
+          "releasePolicy": "on_turn_end",
+          "workerId": "frontend"
+        }
+      ]
+    }
+  ],
+  "workers": [
+    {
+      "id": "eth-mm",
+      "projectId": "hft",
+      "alias": "eth-mm",
+      "role": "Maker fill and adverse selection research",
+      "mode": "managed"
+    },
+    {
+      "id": "frontend",
+      "projectId": "router",
+      "alias": "frontend",
+      "role": "Router console development",
+      "mode": "managed"
+    }
+  ],
+  "clients": [
+    {
+      "principalId": "owner",
+      "clientId": "web",
+      "entryKind": "web",
+      "scopes": [
+        "read",
+        "submit",
+        "cancel",
+        "bind",
+        "handoff",
+        "create",
+        "frontier",
+        "admin"
+      ],
+      "projects": [
+        "*"
+      ],
+      "hosts": [
+        "*"
+      ],
+      "authorizationRevision": 1,
+      "tokenEnv": "PSR_WEB_TOKEN"
+    },
+    {
+      "principalId": "owner",
+      "clientId": "grokbot",
+      "entryKind": "grokbot",
+      "scopes": [
+        "read",
+        "submit",
+        "cancel",
+        "bind",
+        "handoff",
+        "frontier"
+      ],
+      "projects": [
+        "*"
+      ],
+      "hosts": [
+        "*"
+      ],
+      "authorizationRevision": 1,
+      "tokenEnv": "PSR_GROKBOT_TOKEN"
+    },
+    {
+      "principalId": "owner",
+      "clientId": "dot",
+      "entryKind": "dot",
+      "scopes": [
+        "read",
+        "submit",
+        "cancel",
+        "bind",
+        "handoff",
+        "frontier"
+      ],
+      "projects": [
+        "*"
+      ],
+      "hosts": [
+        "*"
+      ],
+      "authorizationRevision": 1,
+      "tokenEnv": "PSR_DOT_TOKEN"
+    },
+    {
+      "principalId": "owner",
+      "clientId": "muse",
+      "entryKind": "muse",
+      "scopes": [
+        "read",
+        "submit",
+        "cancel",
+        "bind",
+        "handoff",
+        "frontier"
+      ],
+      "projects": [
+        "*"
+      ],
+      "hosts": [
+        "*"
+      ],
+      "authorizationRevision": 1,
+      "tokenEnv": "PSR_MUSE_TOKEN"
+    },
+    {
+      "principalId": "owner",
+      "clientId": "cli",
+      "entryKind": "cli",
+      "scopes": [
+        "read",
+        "submit",
+        "cancel",
+        "bind",
+        "handoff",
+        "create",
+        "frontier",
+        "admin"
+      ],
+      "projects": [
+        "*"
+      ],
+      "hosts": [
+        "*"
+      ],
+      "authorizationRevision": 1,
+      "tokenEnv": "PSR_CLI_TOKEN"
+    }
+  ],
+  "templates": [],
+  "tickMs": 2000,
+  "limits": {
+    "activeTasks": 64,
+    "receipts": 200,
+    "receiptMs": 604800000,
+    "outbox": 10000,
+    "outboxMs": 86400000,
+    "sessions": 2000,
+    "handoffDepth": 3,
+    "handoffTasks": 16,
+    "ticketMs": 300000,
+    "freshnessMs": 20000
+  },
+  "publicOrigin": "https://router.example.com"
+}

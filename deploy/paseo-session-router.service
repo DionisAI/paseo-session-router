@@ -1,0 +1,30 @@
+[Unit]
+Description=Paseo Session Router (single controller)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=psr
+Group=psr
+WorkingDirectory=/opt/paseo-session-router
+EnvironmentFile=/etc/paseo-session-router/router.env
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning /opt/paseo-session-router/dist/src/main.js --config /etc/paseo-session-router/router.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+StateDirectory=paseo-session-router
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/paseo-session-router
+# Use a non-root service account with explicitly configured SSH keys/known_hosts.
+# Keep logs bounded at the journal/log collector. The program never logs full prompts.
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=30
+
+[Install]
+WantedBy=multi-user.target

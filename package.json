@@ -1,0 +1,33 @@
+{
+  "name": "paseo-session-router",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "One control service for the coding agents on all your machines: a multi-host Paseo session router with queued dispatch, leveled approvals, a planner, MCP/HTTP/CLI and a web console",
+  "license": "MIT",
+  "keywords": [
+    "paseo",
+    "claude-code",
+    "codex",
+    "agents",
+    "mcp",
+    "orchestration",
+    "router"
+  ],
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning dist/src/main.js",
+    "demo": "node --disable-warning=ExperimentalWarning dist/src/main.js --demo",
+    "build": "node scripts/build.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test dist/tests/*.test.js",
+    "test:ui": "python scripts/test_ui.py",
+    "verify": "npm run build && npm test",
+    "psr": "node --disable-warning=ExperimentalWarning dist/src/cli.js",
+    "mcp:stdio": "node dist/src/mcp-stdio.js",
+    "install:dev": "npm install --prefix tools",
+    "install:paseo": "npm install --prefix integrations/paseo",
+    "smoke:live": "node --disable-warning=ExperimentalWarning dist/src/live-smoke.js"
+  }
+}

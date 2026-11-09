@@ -1,0 +1,10 @@
+# gitleaks configuration for this repository: the default rules, plus one narrow exception.
+# Idempotency keys in examples and tests ("idempotencyKey": "mission-…") are request ids, not secrets, but match the generic
+# API key rule. Fake credentials that tests feed to the Router's masking are written split ('sk_' + '…') instead.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "idempotency keys are request ids, not secrets"
+regexTarget = "match"
+regexes = ['''(?i)idempotencyKey''']

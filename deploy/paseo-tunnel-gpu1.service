@@ -1,0 +1,18 @@
+[Unit]
+Description=SSH tunnel to gpu1 research Paseo daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=psr
+Group=psr
+ExecStart=/usr/bin/ssh -NT -o BatchMode=yes -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 127.0.0.1:17671:127.0.0.1:6767 gpu1
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

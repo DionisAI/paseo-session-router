@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  # TypeScript and Node types used to build
+  - package-ecosystem: npm
+    directory: /tools
+    schedule:
+      interval: weekly
+  # The pinned Paseo SDK: check an upgrade against a non-critical daemon before merging it (docs/DEPLOYMENT.md)
+  - package-ecosystem: npm
+    directory: /integrations/paseo
+    schedule:
+      interval: weekly

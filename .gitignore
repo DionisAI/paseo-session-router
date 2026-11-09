@@ -1,0 +1,15 @@
+node_modules/
+**/node_modules/
+# build output: CI builds it, releases ship it
+dist/
+# private to each deployment: credentials, live config, data, notes
+.state/
+.env
+router.local.json*
+*.sqlite*
+*.token
+# local tooling and test output
+.claude/
+reports/
+.DS_Store
+.playwright-mcp/
