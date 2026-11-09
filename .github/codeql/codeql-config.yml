@@ -1,0 +1,4 @@
+name: paseo-session-router
+# The bundled three.js (MIT) is a third-party library: its Math.random() makes object ids, nothing security related.
+paths-ignore:
+  - web/vendor

@@ -181,7 +181,7 @@ const ICON_ART = {
     fog: ['.........', '.fffffff.', '.........', 'fffffff..', '.........', '..fffffff', '.........', '.fffffff.', '.........'],
 };
 function pixelIcon(name) {
-    let rects = ''; (ICON_ART[name] ?? ICON_ART.sun).forEach((row, y) => [...row].forEach((ch, x) => { if (ICON_INK[ch]) rects += `<rect x="${x}" y="${y}" width="1" height="1" fill="${ICON_INK[ch]}"/>`; }));
+    let rects = ''; (Object.hasOwn(ICON_ART, name) ? ICON_ART[name] : ICON_ART.sun).forEach((row, y) => [...row].forEach((ch, x) => { if (ICON_INK[ch]) rects += `<rect x="${x}" y="${y}" width="1" height="1" fill="${ICON_INK[ch]}"/>`; }));
     return `<svg class="px-icon" viewBox="0 0 9 9" shape-rendering="crispEdges" aria-hidden="true">${rects}</svg>`;
 }
 
@@ -1793,6 +1793,9 @@ export function createPark(root, api) {
     const SKY = new URLSearchParams(location.search), WEEKDAYS = { Sun: '日', Mon: '一', Tue: '二', Wed: '三', Thu: '四', Fri: '五', Sat: '六' };
     const CLOUD = { clear: 0, cloudy: 0.35, overcast: 0.75, fog: 0.6, drizzle: 0.7, rain: 0.85, snow: 0.7, storm: 0.95 };
     const SKY_WORDS = { clear: '晴', cloudy: '多雲', overcast: '陰', fog: '霧', drizzle: '毛毛雨', rain: '雨', snow: '雪', storm: '雷雨' };
+    // a preview names one of the table's own keys, never a name every object inherits (?season=constructor, ?sky=toString)
+    const own = (table, v) => v !== null && Object.hasOwn(table, v) ? v : null;
+    const PREVIEW = { sky: own(CLOUD, SKY.get('sky')), season: own(SEASONS, SKY.get('season')) };
     const clockIn = zone => Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', weekday: 'short' }).formatToParts(new Date()).map(p => [p.type, p.value]));
     const hoursOf = hm => { const m = /^(\d{1,2}):(\d\d)$/.exec(hm ?? ''); return m ? Number(m[1]) + Number(m[2]) / 60 : null; };
     const ramp = (x, a, b) => Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -1801,13 +1804,13 @@ export function createPark(root, api) {
         const w = state.weather, now = w?.current, c = clockIn(w?.timezone ?? undefined), month = Number(c.month), south = w?.hemisphere === 'south';
         const forced = SKY.has('hour') && Number.isFinite(Number(SKY.get('hour'))), hour = forced ? Number(SKY.get('hour')) % 24 : (Number(c.hour) % 24) + Number(c.minute) / 60;
         const north = month >= 3 && month <= 5 ? 'spring' : month >= 6 && month <= 8 ? 'summer' : month >= 9 && month <= 11 ? 'autumn' : 'winter';
-        const season = SEASONS[SKY.get('season')] ? SKY.get('season') : south ? { spring: 'autumn', summer: 'winter', autumn: 'spring', winter: 'summer' }[north] : north;
+        const season = PREVIEW.season ?? (south ? { spring: 'autumn', summer: 'winter', autumn: 'spring', winter: 'summer' }[north] : north);
         const rise = hoursOf(now?.sunrise) ?? 6, set = hoursOf(now?.sunset) ?? 17.5, night = Math.max(1 - ramp(hour, rise - 0.6, rise + 0.4), ramp(hour, set - 0.3, set + 0.7));
         const golden = Math.max(0, 1 - Math.abs(hour - set) / 1.2, 1 - Math.abs(hour - rise) / 1.0) * (1 - night * 0.6);
-        const kind = CLOUD[SKY.get('sky')] !== undefined ? SKY.get('sky') : now?.kind ?? 'clear';
+        const kind = PREVIEW.sky ?? (Object.hasOwn(CLOUD, now?.kind ?? '') ? now.kind : 'clear');
         return { hour, season, night, golden, kind, cloud: CLOUD[kind] ?? 0, month, day: Number(c.day), weekday: WEEKDAYS[c.weekday] ?? c.weekday,
             hh: String(Math.floor(hour)).padStart(2, '0'), mm: forced ? String(Math.round((hour % 1) * 60) % 60).padStart(2, '0') : c.minute,
-            temp: now?.temperature ?? null, wind: now?.windSpeed ?? 6, windDir: now?.windDirection ?? 300, precipitation: now?.precipitation ?? 0, live: !!now, shown: !!now || CLOUD[SKY.get('sky')] !== undefined, place: w?.place ?? '' };
+            temp: now?.temperature ?? null, wind: now?.windSpeed ?? 6, windDir: now?.windDirection ?? 300, precipitation: now?.precipitation ?? 0, live: !!now, shown: !!now || PREVIEW.sky !== null, place: w?.place ?? '' };
     }
     /** Light, haze, lamps and snow from the sky; a new season repaints the farm. */
     function applySky() {
@@ -1839,7 +1842,7 @@ export function createPark(root, api) {
     function renderClock(k) {
         const clock = $('#park-clock', root); if (!clock) return;
         const icon = k.kind === 'clear' ? (k.night > 0.5 ? 'moon' : 'sun') : k.kind === 'cloudy' ? (k.night > 0.5 ? 'cloud' : 'partly') : k.kind === 'overcast' ? 'cloud' : k.kind === 'drizzle' ? 'rain' : k.kind;
-        clock.innerHTML = `<p class="clk-date">週${esc(k.weekday)} · ${k.month}月${k.day}日</p><p class="clk-mid">${pixelIcon(icon)}<span class="clk-season season-${k.season}">${SEASONS[k.season].name}</span><b>${esc(k.hh)}:${esc(k.mm)}</b></p>${placeLine(k)}`;
+        clock.innerHTML = `<p class="clk-date">週${esc(k.weekday)} · ${k.month}月${k.day}日</p><p class="clk-mid">${pixelIcon(icon)}<span class="clk-season season-${esc(k.season)}">${esc(SEASONS[k.season].name)}</span><b>${esc(k.hh)}:${esc(k.mm)}</b></p>${placeLine(k)}`;
         clock.title = k.live ? `${k.place}的天氣，來自 Open-Meteo，每 10 分鐘更新` : k.place ? `${k.place}的時間；沒有天氣（沒設座標，或暫時拿不到）` : '這台電腦的時間（Router 沒有設定地點，見設定檔的 weather）';
     }
 
