@@ -1,8 +1,9 @@
 /** Shared resources (資源): what only one session (or a few) should use at a time and the Router cannot see in use by
  * itself, such as an editor or a GPU. The owner registers each with its machine and number of slots (psr_set_resource).
  * A local session takes one before using it (psr_local_take) and releases it when done (psr_local_release). Sessions that
- * find it taken wait in line in order; the Router tells the next one between its turns when it is theirs, so nobody polls
- * or asks around. A message to resource:<id> goes to whoever holds it, so a session never needs to know which one that is.
+ * find it taken wait in line in order, and the line is the only order (no note, message or forum post reserves anything);
+ * the Router tells the next one between its turns when it is theirs, so nobody polls or asks around. A session that must not
+ * end its turn (a goal or a loop keeps it going) waits inside it with psr_local_wait instead of looking again and again. A message to resource:<id> goes to whoever holds it, so a session never needs to know which one that is.
  * Paseo sessions the Router dispatches take resources too (psr_take, during a Router turn): one that has to wait ends its
  * turn, and the Router later sends it a turn of its own in the name of whoever assigned the waiting task (a reply to it).
  * Advisory only: it replaces no lock the machine has. This module holds the types and bounds; core.ts applies them. */

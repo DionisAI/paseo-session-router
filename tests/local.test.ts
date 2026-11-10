@@ -17,7 +17,7 @@ import type { RouterConfig } from '../src/types.js';
 import type { PeerMessage } from '../src/peer.js';
 
 const owner = principal();
-const LOCAL_TOOLS = ['psr_local_forum_post', 'psr_local_forum_read', 'psr_local_inbox', 'psr_local_message_status', 'psr_local_receive_file', 'psr_local_release', 'psr_local_reply', 'psr_local_resources', 'psr_local_send', 'psr_local_send_file', 'psr_local_status', 'psr_local_take', 'psr_local_who'];
+const LOCAL_TOOLS = ['psr_local_forum_post', 'psr_local_forum_read', 'psr_local_inbox', 'psr_local_message_status', 'psr_local_receive_file', 'psr_local_release', 'psr_local_reply', 'psr_local_resources', 'psr_local_send', 'psr_local_send_file', 'psr_local_status', 'psr_local_take', 'psr_local_wait', 'psr_local_who'];
 const place = (cwd: string | null, repo: string | null = null, branch: string | null = null) => ({ cwd, repo, branch });
 async function setup(change?: (c: RouterConfig) => void) {
     const f = await fixture(c => { c.hosts.find(h => h.id === 'dev2')!.humanApproval = true; change?.(c); });
@@ -186,7 +186,7 @@ function bridge(cwd: string, home: string, env: Record<string, string> = {}, lau
     lines.on('line', line => { const m = JSON.parse(line); if (m.id === undefined) { notes.push(m.method); return; } waiting.get(m.id)?.(m); waiting.delete(m.id); });
     let n = 0;
     const call = (method: string, params: unknown = {}) => new Promise<any>(done => { const id = ++n; waiting.set(id, done); child.stdin!.write(JSON.stringify(rpc(method, params, id)) + '\n'); });
-    const notify = (method: string) => child.stdin!.write(JSON.stringify(rpc(method, {}, null)) + '\n');
+    const notify = (method: string, params: unknown = {}) => child.stdin!.write(JSON.stringify(rpc(method, params, null)) + '\n');
     const exited = new Promise(done => child.once('exit', done));
     return { call, notify, notes, end: async () => { child.stdin!.end(); await exited; }, kill: () => child.kill('SIGTERM'), exited };
 }
@@ -566,4 +566,108 @@ test('psr-local bridge starts at once from the last session\'s answers and joins
         await e.end();
     }
     finally { for (const x of children) if (x.exitCode === null) x.kill('SIGKILL'); await fake.close().catch(() => {}); rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('local over HTTP: psr_local_wait is held as an event stream; a cancel gets no result and takes nothing; at its limit and at shutdown it answers arrived false', async () => {
+    const s = await setup();
+    for (const c of s.f.config.clients) process.env[c.tokenEnv] = randomBytes(32).toString('hex');
+    const R = 'lab3/unreal-editor', http = await startHttp(s.f.router, { port: 0, progressMs: 40, waitHoldMs: 5000 }), short = await startHttp(s.f.router, { port: 0, progressMs: 40, waitHoldMs: 150 });
+    let closed = false;
+    try {
+        s.f.router.setResource(owner, { resourceId: R });
+        const token = s.f.router.issueLocalCredential(owner, { hostId: 'lab3' }).token, cred = s.f.router.localPrincipal(token);
+        const post = (body: unknown, sid?: string, base = http.baseUrl, signal?: AbortSignal) => fetch(`${base}/mcp`, { method: 'POST', signal, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'x-psr-cwd': encodeURIComponent('/w/app'), ...(sid ? { 'mcp-session-id': sid } : {}) }, body: JSON.stringify(body) });
+        const joined = async () => (await post(rpc('initialize', { protocolVersion: '2025-06-18', clientInfo: { name: 'claude-code', version: '2.1.316' } }))).headers.get('mcp-session-id')!;
+        const call = (sid: string, name: string, args: unknown = {}, id = 1, o: { token?: string; base?: string; signal?: AbortSignal } = {}) => post({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args, ...(o.token ? { _meta: { progressToken: o.token } } : {}) } }, sid, o.base, o.signal);
+        const tool = async (sid: string, name: string, args: unknown = {}) => JSON.parse((await (await call(sid, name, args)).json()).result.content[0].text);
+        // event-stream blocks: JSON messages, and comment lines that only keep the connection alive
+        const blocks = (text: string) => text.split('\n\n').filter(Boolean).map(e => e.includes('data: ') ? JSON.parse(e.slice(e.indexOf('data: ') + 6)) : e);
+        const pushable = async (sid: string) => (await s.f.router.pushWait(s.f.router.touchLocal(cred, sid, place('/w/app')), { timeoutMs: 0 })).messages;
+        const a = await joined(), b = await joined(), c = await joined();
+        assert.equal((await tool(a, 'psr_local_take', { resource: R })).you, 'holding');
+        assert.equal((await tool(b, 'psr_local_take', { resource: R })).you, 'waiting');
+        // held with progress on the caller's token, then what arrived; once the answer went out whole the notice is read
+        const held = await call(b, 'psr_local_wait', {}, 7, { token: 'tok-w' });
+        assert.equal(held.status, 200); assert.match(held.headers.get('content-type')!, /^text\/event-stream/);
+        assert.match(held.headers.get('x-psr-tools')!, /^[0-9a-f]{16}$/);
+        await new Promise(r => setTimeout(r, 130));
+        await tool(a, 'psr_local_release', { resource: R });
+        const events = blocks(await held.text()), final = events.at(-1), body = JSON.parse(final.result.content[0].text);
+        assert.ok(events.length >= 2 && events.slice(0, -1).every((e, i) => e.method === 'notifications/progress' && e.params.progressToken === 'tok-w' && e.params.progress === i + 1));
+        assert.deepEqual([final.id, final.result.isError, body.arrived, body.holding.map((h: { resourceId: string }) => h.resourceId), body.messages.length], [7, false, true, [R], 1]);
+        await until(() => s.f.store.all<PeerMessage>('peer_message').every(x => x.to.ref !== b || x.delivery === 'read'));
+        assert.deepEqual(await pushable(b), []);
+        // a cancel names the call by its request id, and only its own session's: no result, and nothing was taken
+        const canceled = await call(c, 'psr_local_wait', {}, 9);
+        const cancel = (sid: string, requestId: unknown) => post(rpc('notifications/cancelled', { requestId, reason: 'User interrupted' }, null), sid);
+        assert.equal((await cancel(a, 9)).status, 202);
+        assert.equal((await cancel(c, 10)).status, 202);
+        await new Promise(r => setTimeout(r, 120));
+        assert.equal((await cancel(c, 9)).status, 202);
+        const quiet = blocks(await canceled.text());
+        assert.ok(quiet.length >= 1 && quiet.every(e => typeof e === 'string' && e.startsWith(':')), 'no progress token: comment lines only, the other cancels ended nothing, and no result after its own cancel');
+        s.f.router.ownerSend(owner, { to: c, kind: 'request', text: 'After the cancel?' });
+        assert.equal((await pushable(c)).length, 1, 'pushes to the session go on as usual');
+        assert.equal((await tool(c, 'psr_local_inbox')).messages.length, 1);
+        // a client that goes away takes nothing either: what comes after is pushed as usual
+        const gone = new AbortController(), dropped = await call(c, 'psr_local_wait', {}, 11, { signal: gone.signal });
+        void dropped.text().catch(() => {});
+        assert.deepEqual(await pushable(c), []);
+        gone.abort();
+        // (sent in the very tick of the abort, the answer would still be handed to the socket whole: let the server see the drop)
+        await new Promise(r => setTimeout(r, 100));
+        s.f.router.ownerSend(owner, { to: c, kind: 'request', text: 'After the drop?' });
+        for (const end = Date.now() + 4000; (await pushable(c)).length !== 1;) { assert.ok(Date.now() < end, 'the dropped wait still holds pushes back'); await new Promise(r => setTimeout(r, 20)); }
+        // at its limit: nothing yet, with where the session stands
+        const d = await joined(), late = blocks(await (await call(d, 'psr_local_wait', {}, 12, { token: 'tok-l', base: short.baseUrl })).text()).at(-1);
+        const said = JSON.parse(late.result.content[0].text);
+        assert.equal(said.arrived, false); assert.match(said.note, /not in line for any resource/);
+        // schema: no arguments
+        assert.equal((await (await call(d, 'psr_local_wait', { seconds: 5 }, 13)).json()).result.isError, true);
+        // a shutdown answers the held call at once
+        const hanging = await call(d, 'psr_local_wait', {}, 14, { token: 'tok-s' }), started = Date.now();
+        await http.close(); closed = true;
+        const last = blocks(await hanging.text()).at(-1);
+        assert.equal(JSON.parse(last.result.content[0].text).arrived, false);
+        assert.ok(Date.now() - started < 3000);
+    } finally { if (!closed) await http.close(); await short.close(); await s.f.close(); }
+});
+
+test('psr-local bridge: a held psr_local_wait passes through it, progress first, then what arrived; a cancel ends it without a result and takes nothing', async () => {
+    const s = await setup();
+    for (const c of s.f.config.clients) process.env[c.tokenEnv] = randomBytes(32).toString('hex');
+    const R = 'lab3/unreal-editor', http = await startHttp(s.f.router, { port: 0, progressMs: 40, waitHoldMs: 5000 });
+    const tmp = mkdtempSync(join(tmpdir(), 'psr-local-')), home = join(tmp, 'conf'), dir = join(tmp, 'proj');
+    try {
+        mkdirSync(home); mkdirSync(dir);
+        s.f.router.setResource(owner, { resourceId: R });
+        const token = s.f.router.issueLocalCredential(owner, { hostId: 'lab3' }).token, cred = s.f.router.localPrincipal(token);
+        writeFileSync(join(home, 'local.json'), JSON.stringify({ url: http.baseUrl }));
+        writeFileSync(join(home, 'local.token'), token + '\n', { mode: 0o600 });
+        const b = bridge(dir, home), tool = async (name: string, args: unknown = {}) => JSON.parse((await b.call('tools/call', { name, arguments: args })).result.content[0].text);
+        await b.call('initialize', { protocolVersion: '2025-06-18', clientInfo: { name: 'claude-code', version: '2.1.316' } });   // call 1
+        const holder = s.join(s.cred('gpu1'), place('/w/holder'));
+        s.f.router.localTake(holder.p, { resource: R });
+        assert.equal((await tool('psr_local_take', { resource: R })).you, 'waiting');   // call 2
+        const me = s.f.store.all<{ id: string; cwd: string | null; closedAt: number | null }>('local_member').find(m => m.closedAt === null && !!m.cwd?.endsWith('/proj'))!;
+        const pushable = async () => (await s.f.router.pushWait(s.f.router.touchLocal(cred, me.id, place(me.cwd)), { timeoutMs: 0 })).messages;
+        // held: the agent sees progress on its token, then the answer of the same call
+        const held = b.call('tools/call', { name: 'psr_local_wait', arguments: {}, _meta: { progressToken: 'tok-b' } });   // call 3
+        await until(() => b.notes.includes('notifications/progress'));
+        s.f.router.localRelease(holder.p, { resource: R });
+        const got = JSON.parse((await held).result.content[0].text);
+        assert.deepEqual([got.arrived, got.holding.map((h: { resourceId: string }) => h.resourceId), got.messages.length], [true, [R], 1]);
+        await until(() => s.f.store.all<PeerMessage>('peer_message').every(x => x.to.ref !== me.id || x.delivery === 'read'));
+        // the agent gives up on a held call (Esc): the bridge passes the cancel on, the call gets no result, pushes go on
+        let answered = false;
+        void b.call('tools/call', { name: 'psr_local_wait', arguments: {} }).then(() => { answered = true; });   // call 4
+        await new Promise(r => setTimeout(r, 150));
+        assert.deepEqual(await pushable(), [], 'waiting: nothing is pushed');
+        b.notify('notifications/cancelled', { requestId: 4, reason: 'User interrupted' });
+        await new Promise(r => setTimeout(r, 150));
+        s.f.router.ownerSend(owner, { to: me.id, kind: 'request', text: 'After the cancel?' });
+        for (const end = Date.now() + 4000; (await pushable()).length !== 1;) { assert.ok(Date.now() < end, 'the canceled wait still holds pushes back'); await new Promise(r => setTimeout(r, 20)); }
+        assert.equal(answered, false);
+        await b.end();
+    } finally { await http.close(); await s.f.close(); rmSync(tmp, { recursive: true, force: true }); }
 });

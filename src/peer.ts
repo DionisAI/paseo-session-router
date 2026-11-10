@@ -44,8 +44,8 @@ export interface PeerMessage {
     via?: string | null;
     /** The owner's only: a Claude session takes it within its current turn instead of after it. */
     urgent: boolean;
-    /** held: waits for the owner; queued: waits for the recipient; delivered: pushed into the session between turns; read: the
-     * recipient read it in its inbox; rejected: the owner dropped it; expired: nobody took it in time. */
+    /** held: waits for the owner; queued: waits for the recipient; delivered: pushed into the session between turns; read: a
+     * tool result showed it to the recipient (its inbox, or psr_local_wait); rejected: the owner dropped it; expired: nobody took it in time. */
     delivery: 'held' | 'queued' | 'delivered' | 'read' | 'rejected' | 'expired';
     deliveredBy: 'bridge' | 'hook' | null;
     heldReason: string | null;

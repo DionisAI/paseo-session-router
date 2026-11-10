@@ -7,7 +7,7 @@ import { gzipSync } from 'node:zlib';
 import { Router } from './core.js';
 import { Auth } from './auth.js';
 import { execute, visibleTools, openapi, startAsk, localToolsTag } from './tools.js';
-import { mcp, MCP_VERSIONS, isAskCall, streamAsk, plainAsk } from './mcp.js';
+import { mcp, MCP_VERSIONS, isAskCall, streamAsk, plainAsk, isWaitCall, streamWait } from './mcp.js';
 import { PLAIN_HOLD_MS } from './services.js';
 import { ASK_TOOL } from './agent-channel.js';
 import { Fault, assert, authFingerprint } from './util.js';
@@ -24,6 +24,8 @@ export interface AppOptions {
     /** psr_ask holds: progress notification interval (default 20 s) and a hold limit overriding the service's (tests only). */
     progressMs?: number;
     askHoldMs?: number;
+    /** How long one psr_local_wait call holds (tests shorten it). */
+    waitHoldMs?: number;
 }
 export async function startHttp(router: Router, options: AppOptions = {}) {
     const auth = new Auth(router.config, router.store, token => router.agentPrincipal(token), token => router.localPrincipal(token));
@@ -248,6 +250,13 @@ export async function startHttp(router: Router, options: AppOptions = {}) {
                     const place = localPlace(req.headers), init = (input as { method?: unknown } | null)?.method === 'initialize';
                     if (init) { const m = router.joinLocal(p, { place, client: (input as { params?: { clientInfo?: { name?: unknown; version?: unknown } } }).params?.clientInfo }); joined = m.id; caller = { ...p, clientId: `local:${m.id}` }; }
                     else { const sid = req.headers['mcp-session-id']; assert(typeof sid === 'string' && sid.length <= 100, 'SESSION_REQUIRED', 'Initialize first: a local session sends its Mcp-Session-Id with every request', 400); caller = router.touchLocal(p, sid, place, localThread(req.headers)); }
+                }
+                // a local session's psr_local_wait waits on this request (an event stream) for what otherwise reaches it between turns
+                if (p.entryKind === 'local' && !joined && isWaitCall(input)) {
+                    res.once('close', () => streams.delete(res));
+                    const stop = streamWait(router, caller, input, res, { progressMs: options.progressMs ?? 20000, holdMs: options.waitHoldMs });
+                    if (stop) streams.set(res, stop);
+                    return;
                 }
                 const result = await mcp(router, caller, input);
                 if (joined) res.setHeader('mcp-session-id', joined);

@@ -10,7 +10,7 @@ import { Store } from './store.js';
 import { Transfers, TRANSFER_INBOX, TRANSFER_MAX_BYTES, TRANSFER_B64_PART_BYTES, asText, TRANSFER_SENT_NOTE, TRANSFER_RECEIVED_NOTE, normalizeCode, secretPath, workspacePath, type Transfer, type TransferParty } from './transfers.js';
 import { channelTools, SEND_FILE_TOOL, VERDICT_TOOL, TAKE_TOOL, FORUM_READ_TOOL, FORUM_KEEP, FORUM_PAGE, FORUM_PAGE_MAX, FORUM_POSTS_PER_HOUR, FORUM_TEXT_BYTES, FORUM_UNTRUSTED, FORUM_POSTED_NOTE, forumHint } from './agent-channel.js';
 import { SEAT_MODES, OWNER_APPROVAL_MODES, approvalsGoToPerson } from './config.js';
-import { LOCAL_CLOSED_KEEP_MS, LOCAL_CREDENTIAL_DAYS, LOCAL_LIVE_MS, LOCAL_MEMBERS_MAX, LOCAL_SILENT_MS, LOCAL_STATUS_BYTES, LOCAL_TOKEN_PREFIX, LOCAL_TOUCH_MS, isAgentHome, isLocalForumKey, localForum, localName, localProvider, type LocalCredential, type LocalMember, type LocalPlace } from './local.js';
+import { LOCAL_CLOSED_KEEP_MS, LOCAL_CREDENTIAL_DAYS, LOCAL_LIVE_MS, LOCAL_MEMBERS_MAX, LOCAL_SILENT_MS, LOCAL_STATUS_BYTES, LOCAL_TOKEN_PREFIX, LOCAL_TOUCH_MS, LOCAL_WAITS_MAX, LOCAL_WAIT_SEC, isAgentHome, isLocalForumKey, localForum, localName, localProvider, type LocalCredential, type LocalMember, type LocalPlace } from './local.js';
 import { PEER_BRIDGE_POLL_MS, PEER_TEXT_BYTES, PEER_REQUESTS_PER_HOUR, PEER_MESSAGES_PER_HOUR, PEER_PAIR_BURST, PEER_PAIR_WINDOW_MS, PEER_TTL_MS, PEER_KEEP_MS, PEER_PAGE, PEER_PUSH_WAIT_MAX_MS, PEER_HOOK_EVENTS, PEER_MODES, PEER_UNTRUSTED, isThreadId, pairKey, partyKey, peerEnvelope, type PeerKind, type PeerMessage, type PeerMode, type PeerParty } from './peer.js';
 import { RESOURCE_ID, RESOURCE_PREFIX, RESOURCES_MAX, RESOURCE_SLOTS_MAX, RESOURCE_QUEUE_MAX, RESOURCE_NOTE_BYTES, RESOURCE_DESCRIPTION_BYTES, RESOURCE_REMIND_MIN, RESOURCE_REMIND_MAX, RESOURCE_KEEP_MS, RESOURCE_TURN_WAIT_MS, remindAfter, isPaseoHolder, resourceTurnPrompt, type ResourceTurn, type Resource, type ResourceClaim } from './resources.js';
 import { checkProfiles, checkVerifySpec, arbiterAnswer, arbiterPrompt, checkVerdict, checkableCheckout, type VerdictInput } from './arbiter.js';
@@ -172,13 +172,18 @@ export class Router extends EventEmitter {
     /** When each member's bridge last long-polled for messages to push (in memory): such a bridge puts its messages into its
      * session itself, so that session's hooks get none (a Codex thread on the Codex daemon has both). */
     private pushPolls = new Map<string, number>();
+    /** Sessions inside psr_local_wait (member -> how its wait is ended early, and since when): nothing is pushed to one
+     * meanwhile, since that call answers it. A newer wait of the same session ends the older one. */
+    private localWaits = new Map<string, { finish: (arrived: boolean | null) => void; since: number }>();
+    /** A wait holds pushes back for twice one call's hold at most: one that was never closed cannot silence a session. */
+    private waitsNow(memberId: string) { const w = this.localWaits.get(memberId); return !!w && this.now() - w.since <= 2 * LOCAL_WAIT_SEC * 1000; }
     /** Set when the Router is shutting down: every long poll answers at once (as on a timeout), so the HTTP server can close. */
     private waitsReleased = false;
     private ticking: Promise<void> | null = null;
     private closed = false;
     /** Files waiting to be received (psr_send_file, psr-xfer, the psr-local bridge), in <dataDir>/transfers. */
     readonly transfers: Transfers;
-    constructor(readonly config: RouterConfig, readonly store: Store, readonly adapters: Map<string, Adapter>, readonly now: () => number = Date.now) { super(); this.setMaxListeners(100); this.secret = store.meta('signingSecret')!; this.transfers = new Transfers(store, config.dataDir, now); this.store.tx(() => { for (const h of config.hosts)
+    constructor(readonly config: RouterConfig, readonly store: Store, readonly adapters: Map<string, Adapter>, readonly now: () => number = Date.now) { super(); this.setMaxListeners(200); this.secret = store.meta('signingSecret')!; this.transfers = new Transfers(store, config.dataDir, now); this.store.tx(() => { for (const h of config.hosts)
         store.put('host', h.id, h, null, h.id, this.now()); for (const w of config.workers)
         if (!store.get('worker', w.id))
             store.put('worker', w.id, { ...w, revision: 1, sessionRefs: [] } satisfies Worker, w.projectId, null, this.now()); for (const d of config.daemons) {
@@ -1938,7 +1943,7 @@ export class Router extends EventEmitter {
     localWho(p: Principal) {
         const me = this.memberOf(p), held = this.activeClaims().filter(c => c.state === 'holding');
         const sessions = this.openMembers().filter(x => x.id !== me.id).sort((a, b) => b.lastSeenAt - a.lastSeenAt).slice(0, 100).map(x => ({ memberId: x.id, name: localName(x), hostId: x.hostId, provider: x.provider, cwd: x.cwd, repo: x.repo, branch: x.branch, status: x.status, holds: held.filter(c => c.memberId === x.id).map(c => c.resourceId), live: this.memberLive(x), lastSeenAt: x.lastSeenAt, takes: this.peerMode(x) }));
-        return { you: { memberId: me.id, name: localName(me), takes: this.peerMode(me) }, sessions, note: 'takes: push = between its turns; hold = only when it checks its inbox; off = no messages. Message only for what a session alone can give, above all the order of a shared resource.' };
+        return { you: { memberId: me.id, name: localName(me), takes: this.peerMode(me) }, sessions, note: 'takes: push = between its turns; hold = only when it checks its inbox; off = no messages. Message only for what a session alone can give; the order of a registered resource is its line (psr_local_take), never a message.' };
     }
     /** psr_local_send: a request or a notice to one other open session. */
     localSend(p: Principal, input: { to: string; kind: 'request' | 'notice'; text: string }) {
@@ -1946,7 +1951,9 @@ export class Router extends EventEmitter {
         assert(this.peerMode(to) !== 'off', 'RECIPIENT_OFF', `${localName(to)} takes no messages now`, 409);
         const x = this.peerSend(this.memberParty(me), this.memberParty(to), { kind: input.kind, text: input.text, via });
         this.changed();
-        return { messageId: x.id, kind: x.kind, to: localName(to), via, delivery: x.delivery, expiresAt: x.expiresAt, masked: x.text !== input.text.trim(), note: this.sentNote(x, to) };
+        // what that session holds and the sender is not in line for: asking about it is not lining up for it
+        const claims = this.activeClaims(), out = claims.filter(c => c.state === 'holding' && c.memberId === to.id && (!via || c.resourceId === via) && !claims.some(y => y.resourceId === c.resourceId && y.memberId === me.id)).map(c => c.resourceId);
+        return { messageId: x.id, kind: x.kind, to: localName(to), via, delivery: x.delivery, expiresAt: x.expiresAt, masked: x.text !== input.text.trim(), note: `${this.sentNote(x, to)}${out.length ? ` You are not in line for ${out.join(', ')}, which that session holds: a message reserves nothing. If you need it, take it with psr_local_take; the Router tells you when it is yours.` : ''}` };
     }
     /** to: a memberId, or resource:<id> for whoever holds that resource (the one that has held it longest when it has several
      * slots), so a session asks about a resource without knowing which session has it. */
@@ -1972,16 +1979,74 @@ export class Router extends EventEmitter {
         this.changed();
         return { messageId: r.id, replyTo: q.id, to: this.peerName(q.from), delivery: r.delivery, masked: r.text !== input.text.trim(), note: to && to.closedAt !== null ? 'That session has closed; the answer waits in case it comes back (a Codex thread does).' : this.sentNote(r, to) };
     }
-    /** psr_local_inbox: unread messages to this session, oldest first, marked read as they are returned; the requests it still
-     * has to answer and its own requests still waiting for an answer. Held messages stay out until the owner releases them. */
-    localInbox(p: Principal) {
-        const me = this.memberOf(p), now = this.now(), all = this.peers(), mine = (y: PeerParty) => y.kind === 'local' && y.ref === me.id;
-        const unread = all.filter(x => mine(x.to) && this.peerPending(x)).sort((a, b) => a.seq - b.seq), page = unread.slice(0, PEER_PAGE);
-        this.store.tx(() => { for (const x of page) this.store.put('peer_message', x.id, { ...x, delivery: 'read', readAt: now }, null, null, now); });
-        if (page.length) this.changed();
+    /** A message a tool result has yet to show its session: on its way, or put into the session's own queue by its bridge, which
+     * shows it only once the turn ends (a session that keeps waiting inside one turn would never see it). */
+    private unshown(x: PeerMessage) { return x.expiresAt > this.now() && (x.delivery === 'queued' || (x.delivery === 'delivered' && x.deliveredBy === 'bridge')); }
+    /** A session's unread messages, oldest first (one page), the requests it still has to answer and its own requests still
+     * waiting for an answer. Held messages stay out until the owner releases them. pushed: also those its bridge already put
+     * into its queue (psr_local_wait shows them once more, with pushedAt). Nothing is marked here. */
+    private inboxPage(me: LocalMember, pushed = false) {
+        const all = this.peers(), mine = (y: PeerParty) => y.kind === 'local' && y.ref === me.id;
+        const unread = all.filter(x => mine(x.to) && (pushed ? this.unshown(x) : this.peerPending(x))).sort((a, b) => a.seq - b.seq), page = unread.slice(0, PEER_PAGE);
         const toAnswer = all.filter(x => mine(x.to) && this.peerOpen(x) && x.delivery !== 'held' && x.delivery !== 'rejected' && !page.some(y => y.id === x.id)).map(x => ({ requestId: x.id, from: this.peerName(x.from), text: x.text, expiresAt: x.expiresAt }));
         const waitingOn = all.filter(x => mine(x.from) && this.peerOpen(x)).map(x => ({ requestId: x.id, to: this.peerName(x.to), delivery: this.peerState(x).delivery, expiresAt: x.expiresAt }));
-        return { messages: page.map(x => ({ messageId: x.id, kind: x.kind, from: this.peerName(x.from), text: x.text, replyTo: x.replyTo, urgent: x.urgent, createdAt: x.createdAt, ...(x.kind === 'request' ? { answerBy: x.expiresAt } : {}) })), more: unread.length > page.length, toAnswer, waitingOn, untrusted: PEER_UNTRUSTED };
+        return { page, messages: page.map(x => ({ messageId: x.id, kind: x.kind, from: this.peerName(x.from), text: x.text, replyTo: x.replyTo, urgent: x.urgent, createdAt: x.createdAt, ...(x.kind === 'request' ? { answerBy: x.expiresAt } : {}), ...(x.delivery === 'delivered' ? { pushedAt: x.deliveredAt } : {}) })), more: unread.length > page.length, toAnswer, waitingOn };
+    }
+    /** Marks the messages a tool result showed their session as read (those no tool result had shown); how many it marked. */
+    private markRead(ids: string[]) {
+        const now = this.now(), xs = ids.map(id => this.store.get<PeerMessage>('peer_message', id)).filter((x): x is PeerMessage => !!x && this.unshown(x));
+        this.store.tx(() => { for (const x of xs) this.store.put('peer_message', x.id, { ...x, delivery: 'read', readAt: now }, null, null, now); });
+        return xs.length;
+    }
+    /** psr_local_inbox: unread messages to this session, oldest first, marked read as they are returned; the requests it still
+     * has to answer and its own requests still waiting for an answer. An empty one says how to wait instead of looking again. */
+    localInbox(p: Principal) {
+        const { page, ...box } = this.inboxPage(this.memberOf(p));
+        if (this.markRead(page.map(x => x.id))) this.changed();
+        return { ...box, ...(page.length ? {} : { note: 'Nothing new. Messages reach you between your turns, so end your turn; if you must keep going and nothing is left but waiting, call psr_local_wait instead of looking again.' }), untrusted: PEER_UNTRUSTED };
+    }
+    /** psr_local_wait: a session waits inside its turn for what otherwise reaches it between turns: a message no tool result has
+     * shown it yet (unshown: the Router's "it is yours now" among them, and what its bridge already put into its own queue). The
+     * transport holds the call (mcp.ts): arrived settles true when something came, false when stop() ends the wait at its limit
+     * or the Router shuts down, null when a newer wait of the same session took over. result() is what to answer. end(delivered)
+     * closes the wait: with delivered, what the answer showed is read; without, all of it stays for the usual delivery. From
+     * its start until end() nothing is pushed to the session, since this call answers it. */
+    localWait(p: Principal) {
+        const id = this.memberOf(p).id;
+        assert(this.localWaits.has(id) || this.localWaits.size < LOCAL_WAITS_MAX, 'CAPACITY_EXCEEDED', 'Too many sessions are waiting now: end your turn instead, what you wait for reaches you between turns', 429);
+        this.localWaits.get(id)?.finish(null);
+        let settle!: (v: boolean | null) => void, settled = false, ended = false, shown: string[] = [];
+        const arrived = new Promise<boolean | null>(done => { settle = done; });
+        const news = () => { const m = this.store.get<LocalMember>('local_member', id); return !m || m.closedAt !== null || this.peers().some(x => x.to.kind === 'local' && x.to.ref === id && this.unshown(x)); };
+        const finish = (v: boolean | null) => { if (settled) return; settled = true; this.off('changed', check); settle(v); };
+        const check = () => { if (news()) finish(true); else if (this.waitsReleased) finish(false); };
+        this.localWaits.set(id, { finish, since: this.now() });
+        this.on('changed', check);
+        check();
+        return {
+            arrived,
+            stop: () => finish(false),
+            result: () => {
+                const { page, ...box } = this.inboxPage(this.memberOf(p), true), claims = this.activeClaims().filter(c => c.memberId === id).sort((a, b) => a.seq - b.seq);
+                const holding = claims.filter(c => c.state === 'holding').map(c => ({ resourceId: c.resourceId, since: c.grantedAt }));
+                const inLine = claims.filter(c => c.state === 'waiting').map(c => ({ resourceId: c.resourceId, position: this.claimsOf(c.resourceId).filter(y => y.state === 'waiting').findIndex(y => y.id === c.id) + 1 }));
+                shown = page.map(x => x.id);
+                const where = [...inLine.map(l => `You are number ${l.position} in line for ${l.resourceId}`), ...(box.waitingOn.length ? [`${box.waitingOn.length} request${box.waitingOn.length > 1 ? 's' : ''} of yours ${box.waitingOn.length > 1 ? 'are' : 'is'} still unanswered`] : [])];
+                const note = page.length ? `Something arrived for you: the message${page.length > 1 ? 's' : ''} above${box.more ? ' (more are waiting: call psr_local_wait again)' : ''}.${page.some(x => x.delivery === 'delivered') ? ' One with pushedAt was put into your session\'s own queue at that time, where it shows only after your turn: if it reaches you again, it is that same message, not a new one.' : ''}`
+                    : `Nothing yet. ${where.length ? where.join('; ') : 'You are not in line for any resource and have no open request, so nothing is on its way to you: to wait for a resource, take it first with psr_local_take (asking its holder, a note or a forum post reserves nothing)'}.${holding.length ? ` You hold ${holding.map(h => h.resourceId).join(', ')}: release it as soon as you are done.` : ''} Call psr_local_wait again to keep waiting; do not check the inbox or the resources in between.`;
+                return { arrived: page.length > 0, ...box, holding, inLine, note, untrusted: PEER_UNTRUSTED };
+            },
+            end: (delivered: boolean) => {
+                if (ended) return;
+                ended = true;
+                finish(false);
+                const mine = this.localWaits.get(id)?.finish === finish;
+                if (mine) this.localWaits.delete(id);
+                const wrote = delivered ? this.markRead(shown) : 0;
+                // pushes to this session start again; what was not delivered goes the usual way
+                if (mine || wrote) this.changed();
+            },
+        };
     }
     /** psr_local_message_status: what became of messages this session sent. */
     localMessageStatus(p: Principal, input: { messageIds?: string[] }) {
@@ -1991,8 +2056,11 @@ export class Router extends EventEmitter {
     }
     /** What the bridge or a hook may put into a session between its turns: queued, unexpired requests and replies while it
      * takes push, the owner's urgent ones first, then oldest first. Notices wait in the inbox, except the Router's own (a
-     * resource it waited for is now its own, a reminder that others wait for one it holds). */
-    private pushable(m: LocalMember) {
+     * resource it waited for is now its own, a reminder that others wait for one it holds). Nothing while the session waits
+     * in psr_local_wait: that call answers it. */
+    private pushable(m: LocalMember) { return this.waitsNow(m.id) ? [] : this.pushSet(m); }
+    /** The same, whether or not the session waits: what a bridge already put in is acknowledged either way. */
+    private pushSet(m: LocalMember) {
         if (this.peerMode(m) !== 'push') return [];
         return this.peers().filter(x => x.to.kind === 'local' && x.to.ref === m.id && (x.kind !== 'notice' || x.from.kind === 'router') && this.peerPending(x)).sort((a, b) => Number(b.urgent) - Number(a.urgent) || a.seq - b.seq).slice(0, PEER_PAGE);
     }
@@ -2014,7 +2082,7 @@ export class Router extends EventEmitter {
     pushAck(p: Principal, input: { messageIds?: unknown }) {
         const me = this.memberOf(p), ids = input.messageIds;
         assert(Array.isArray(ids) && ids.length <= PEER_PAGE && ids.every(i => typeof i === 'string'), 'INVALID_ARGUMENT', `messageIds: at most ${PEER_PAGE} ids`);
-        const xs = this.pushable(me).filter(x => ids.includes(x.id));
+        const xs = this.pushSet(me).filter(x => ids.includes(x.id));
         this.delivered(xs, 'bridge');
         return { delivered: xs.map(x => x.id) };
     }
@@ -2125,20 +2193,23 @@ export class Router extends EventEmitter {
         });
     }
     private endClaimsOf(memberId: string, reason: NonNullable<ResourceClaim['releaseReason']>) { for (const c of this.activeClaims().filter(c => c.memberId === memberId)) this.endClaim(c, reason); }
-    /** psr_local_resources: the resources the owner registered, who holds each and who waits, and your place. */
+    /** psr_local_resources: the resources the owner registered, who holds each and who waits, this session's place (you:
+     * holding, waiting or null), and which ones in use it is not in line for. */
     localResources(p: Principal) {
         const me = this.memberOf(p);
-        return { resources: this.store.all<Resource>('resource').map(r => this.resourceView(r, me.id)), note: 'Take a resource with psr_local_take before you use it and release it with psr_local_release as soon as you are done. Holding one has no time limit and nobody takes it from you; remindAfterMinutes is when, if others wait, the Router reminds the holder once. To ask whoever holds one (for example when it will be free), psr_local_send to "resource:<id>".' };
+        const resources = this.store.all<Resource>('resource').map(r => { const v = this.resourceView(r, me.id), place = v.waiting.find(w => w.mine); return { ...v, you: v.holders.some(h => h.mine) ? 'holding' as const : place ? 'waiting' as const : null, position: place?.position ?? null }; });
+        const out = resources.filter(r => r.you === null && r.free === 0).map(r => r.resourceId);
+        return { resources, note: `Take a resource with psr_local_take before you use it and release it with psr_local_release as soon as you are done. The line is the only order: a holder's note, a message or a forum post reserves nothing. Holding one has no time limit and nobody takes it from you; remindAfterMinutes is when, if others wait, the Router reminds the holder once. To ask whoever holds one what the line cannot tell you (when it will be done), psr_local_send to "resource:<id>".${out.length ? ` You are not in line for ${out.join(', ')} (in use): if you need it, take it now with psr_local_take, then end your turn or wait with psr_local_wait; nothing tells you when it is free otherwise.` : ''}` };
     }
     /** psr_local_take: this session holds the resource now (a free slot and nobody waiting before it) or waits in line; the
-     * Router tells it between its turns when it is its own. Taking again changes nothing. */
+     * Router tells it between its turns when it is its own (or its psr_local_wait does). Taking again changes nothing. */
     localTake(p: Principal, input: { resource: string; note?: string }) {
         const me = this.memberOf(p), r = this.resourceOf(input.resource), note = this.claimNote(input.note);
         const mine = this.claimsOf(r.id).find(c => c.memberId === me.id) ?? this.newClaim(r, me.id, note);
         const v = this.resourceView(r, me.id), position = v.waiting.find(w => w.mine)?.position ?? null;
         return { ...v, you: mine.state, position, note: mine.state === 'holding'
             ? `${r.id} is yours, with no time limit: nobody takes it from you. Release it with psr_local_release as soon as you are done${v.waiting.length ? ` (${v.waiting.length} waiting)` : ''}. If others wait, the Router reminds you once after ${remindAfter(r)} minutes.`
-            : `${r.id} is in use (${v.holders.map(h => h.name).join(', ')}); you are number ${position} in line. The Router tells you between your turns when it is yours: do not poll or take it again. To ask the holder something only it can answer (when it will be done), psr_local_send to "resource:${r.id}". If you stop needing it, psr_local_release takes you out of line.` };
+            : `${r.id} is in use (${v.holders.map(h => h.name).join(', ')}); you are number ${position} in line, and the line is the only order. The Router tells you when it is yours: end your turn (it reaches you between turns) or, if you must not stop, wait with psr_local_wait; do not poll or take it again. To ask the holder something only it can answer (when it will be done), psr_local_send to "resource:${r.id}". If you stop needing it, psr_local_release takes you out of line.` };
     }
     private claimNote(note: unknown) {
         assert(note === undefined || (typeof note === 'string' && Buffer.byteLength(note) <= RESOURCE_NOTE_BYTES && !/[\u0000-\u001f\u007f\u2028\u2029]/.test(note)), 'INVALID_ARGUMENT', `note: one line of at most ${RESOURCE_NOTE_BYTES} bytes`);

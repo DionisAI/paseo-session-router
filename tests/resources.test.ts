@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { fixture, principal, code, withServices } from './helpers.js';
 import { execute, visibleTools } from '../src/tools.js';
 import { RESOURCE_KEEP_MS } from '../src/resources.js';
+import { LOCAL_WAIT_SEC } from '../src/local.js';
 import { channelTools } from '../src/agent-channel.js';
 import { mcp } from '../src/mcp.js';
 import type { PeerMessage } from '../src/peer.js';
@@ -111,6 +112,182 @@ test('resources: a message to resource:<id> goes to whoever holds it', async (t)
     // the usual bounds still hold between the two sessions
     assert.throws(() => f.router.localSend(b.p, { to: `resource:${R}`, kind: 'request', text: 'again?' }), code('REQUEST_OPEN'));
     assert.equal(f.router.ownerSend(owner, { to: `resource:${R}`, kind: 'notice', text: 'Close the editor before 18:00' }).via, R);
+});
+
+test('resources: a session that is not in line is told so: by the list, by the answer to a message to the holder and by an empty inbox', async (t) => {
+    const { f, gpu, lab, join } = await setup(); t.after(f.close);
+    f.router.setResource(owner, { resourceId: R });
+    const a = join(lab, '/w/a'), b = join(gpu, '/w/b');
+    // free: nothing to line up for
+    let list = f.router.localResources(b.p);
+    assert.deepEqual([list.resources[0].you, list.resources[0].position], [null, null]);
+    assert.doesNotMatch(list.note, /not in line/);
+    f.router.localTake(a.p, { resource: R, note: 'bake; b next' });
+    // in use: the list names the resources this session is not in line for, and says what reserves nothing
+    list = f.router.localResources(b.p);
+    assert.deepEqual([list.resources[0].you, list.resources[0].position], [null, null]);
+    assert.match(list.note, /a holder's note, a message or a forum post reserves nothing/);
+    assert.match(list.note, /You are not in line for lab3\/unreal-editor.*psr_local_take/);
+    assert.deepEqual([f.router.localResources(a.p).resources[0].you, f.router.localResources(a.p).resources[0].position], ['holding', null]);
+    assert.doesNotMatch(f.router.localResources(a.p).note, /not in line/);
+    // asking the holder puts nobody in line, and the answer says so: to resource:<id> and to that session by name
+    const asked = f.router.localSend(b.p, { to: `resource:${R}`, kind: 'request', text: 'When are you done?' });
+    assert.match(asked.note, /You are not in line for lab3\/unreal-editor.*a message reserves nothing.*psr_local_take/);
+    assert.match(f.router.localSend(b.p, { to: a.id, kind: 'notice', text: 'I am after you' }).note, /You are not in line for lab3\/unreal-editor/);
+    // an empty inbox says how to wait instead of looking again
+    const empty = f.router.localInbox(b.p);
+    assert.deepEqual(empty.messages, []);
+    assert.match(empty.note!, /end your turn.*psr_local_wait/);
+    assert.equal(f.router.localInbox(a.p).note, undefined);
+    // in line: no reminder
+    f.router.localTake(b.p, { resource: R });
+    list = f.router.localResources(b.p);
+    assert.deepEqual([list.resources[0].you, list.resources[0].position], ['waiting', 1]);
+    assert.doesNotMatch(list.note, /not in line/);
+    assert.doesNotMatch(f.router.localSend(b.p, { to: `resource:${R}`, kind: 'notice', text: 'No hurry' }).note, /not in line/);
+});
+
+test('resources: psr_local_wait holds a session inside its turn until the resource is its own; nothing is pushed to it meanwhile', async (t) => {
+    const { f, gpu, lab, join, pushed } = await setup(); t.after(f.close);
+    f.router.setResource(owner, { resourceId: R, description: 'Unreal Editor' });
+    const a = join(lab, '/w/a'), b = join(gpu, '/w/b');
+    f.router.localTake(a.p, { resource: R });
+    f.router.localTake(b.p, { resource: R });
+    const w = f.router.localWait(b.p);
+    let state: boolean | null | 'pending' = 'pending';
+    void w.arrived.then(v => { state = v; });
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(state, 'pending');
+    f.router.localRelease(a.p, { resource: R });
+    assert.equal(await w.arrived, true);
+    // the waiting call answers it, so the bridge has nothing to put in
+    assert.deepEqual(await pushed(b.p), []);
+    const r = w.result();
+    assert.equal(r.arrived, true);
+    assert.deepEqual(r.holding.map(h => h.resourceId), [R]);
+    assert.deepEqual(r.messages.map(x => [x.kind, x.from, x.pushedAt]), [['notice', 'the Router', undefined]]);
+    assert.match(r.messages[0].text, /^lab3\/unreal-editor \(Unreal Editor\) is yours now: it was your turn in line\..*psr_local_release/);
+    assert.deepEqual(r.inLine, []);
+    assert.match(r.note, /^Something arrived for you: the message above\.$/);
+    // still nothing pushed until the answer went out; once it did, the notice is read and is no news
+    assert.deepEqual(await pushed(b.p), []);
+    w.end(true);
+    assert.deepEqual(await pushed(b.p), []);
+    assert.deepEqual(f.router.localInbox(b.p).messages, []);
+    const again = f.router.localWait(b.p);
+    again.stop();
+    assert.equal(await again.arrived, false);
+    const idle = again.result();
+    assert.deepEqual([idle.arrived, idle.messages, idle.holding.map(h => h.resourceId)], [false, [], [R]]);
+    assert.match(idle.note, /You hold lab3\/unreal-editor: release it as soon as you are done/);
+    again.end(false);
+});
+
+test('resources: psr_local_wait ends on a reply too, shows once more what the bridge already put into the session\'s queue, and at its limit says where the session stands', async (t) => {
+    const { f, gpu, lab, join, pushed } = await setup(); t.after(f.close);
+    f.router.setResource(owner, { resourceId: R });
+    const a = join(lab, '/w/a'), b = join(gpu, '/w/b'), c = join(lab, '/w/c');
+    f.router.localTake(a.p, { resource: R });
+    // neither in line nor asking anyone: nothing is on its way, and the answer says how to get in line
+    let w = f.router.localWait(c.p);
+    w.stop();
+    assert.equal(await w.arrived, false);
+    let r = w.result();
+    assert.deepEqual([r.arrived, r.inLine, r.holding, r.waitingOn], [false, [], [], []]);
+    assert.match(r.note, /not in line for any resource and have no open request.*psr_local_take.*reserves nothing/);
+    w.end(false);
+    // in line: its place, and to call again rather than look around
+    f.router.localTake(b.p, { resource: R });
+    w = f.router.localWait(b.p);
+    w.stop();
+    assert.equal(await w.arrived, false);
+    r = w.result();
+    assert.deepEqual([r.arrived, r.inLine], [false, [{ resourceId: R, position: 1 }]]);
+    assert.match(r.note, /number 1 in line for lab3\/unreal-editor.*Call psr_local_wait again/);
+    w.end(false);
+    // without a held connection the tool answers at once
+    const now = await execute(f.router, b.p, 'psr_local_wait', {}) as { arrived: boolean; inLine: unknown[] };
+    assert.deepEqual([now.arrived, now.inLine.length], [false, 1]);
+    assert.deepEqual(await pushed(b.p), []);
+    // the reply to its request ends the wait
+    const q = f.router.localSend(b.p, { to: `resource:${R}`, kind: 'request', text: 'When?' });
+    w = f.router.localWait(b.p);
+    f.router.localReply(a.p, { requestId: q.messageId, text: 'Ten minutes' });
+    assert.equal(await w.arrived, true);
+    r = w.result();
+    assert.deepEqual(r.messages.map(x => [x.kind, x.text, x.replyTo]), [['reply', 'Ten minutes', q.messageId]]);
+    assert.deepEqual([r.holding, r.waitingOn], [[], []]);
+    w.end(true);
+    assert.deepEqual(f.router.localInbox(b.p).messages, []);
+    // its bridge put "it is yours now" into the session's own queue, which shows it only after the turn; a session that waits
+    // inside that turn would never see it, so the wait shows it once more, at once, and says since when it was pushed
+    f.router.localRelease(a.p, { resource: R });
+    const got = await pushed(b.p);
+    assert.equal(got.length, 1);
+    f.router.pushAck(b.p, { messageIds: got.map(x => x.messageId) });
+    assert.deepEqual(f.router.localInbox(b.p).messages, [], 'the inbox itself keeps to what was never pushed');
+    w = f.router.localWait(b.p);
+    assert.equal(await w.arrived, true);
+    r = w.result();
+    assert.deepEqual([r.arrived, r.messages.map(x => [x.kind, x.from, typeof x.pushedAt]), r.holding.map(h => h.resourceId)], [true, [['notice', 'the Router', 'number']], [R]]);
+    assert.match(r.messages[0].text, /is yours now: it was your turn in line/);
+    assert.match(r.note, /pushedAt.*that same message, not a new one/);
+    w.end(true);
+    // once: the next wait holds
+    w = f.router.localWait(b.p);
+    w.stop();
+    assert.equal(await w.arrived, false);
+    w.end(false);
+    // a pushed message that has expired meanwhile is left alone
+    const old = f.router.ownerSend(owner, { to: b.id, kind: 'request', text: 'An hour ago' });
+    f.router.pushAck(b.p, { messageIds: [old.messageId] });
+    f.advance(61 * 60000);
+    w = f.router.localWait(b.p);
+    w.stop();
+    assert.equal(await w.arrived, false);
+    w.end(false);
+});
+
+test('resources: a psr_local_wait answer that never reached its session leaves everything for the usual push; a newer wait takes over an older one', async (t) => {
+    const { f, gpu, lab, join, pushed } = await setup(); t.after(f.close);
+    f.router.setResource(owner, { resourceId: R });
+    const a = join(lab, '/w/a'), b = join(gpu, '/w/b'), c = join(lab, '/w/c');
+    f.router.localTake(a.p, { resource: R });
+    f.router.localTake(b.p, { resource: R });
+    const w = f.router.localWait(b.p);
+    f.router.localRelease(a.p, { resource: R });
+    assert.equal(await w.arrived, true);
+    assert.equal(w.result().messages.length, 1);
+    w.end(false);
+    const got = await pushed(b.p);
+    assert.equal(got.length, 1);
+    assert.match(got[0].text, /is yours now: it was your turn in line/);
+    // the same session waits again while an older call still hangs (its agent gave up on it without saying so)
+    const w1 = f.router.localWait(c.p), w2 = f.router.localWait(c.p);
+    assert.equal(await w1.arrived, null);
+    w1.end(false);
+    f.router.ownerSend(owner, { to: c.id, kind: 'request', text: 'Status?' });
+    assert.equal(await w2.arrived, true);
+    assert.deepEqual(await pushed(c.p), []);
+    // what its bridge put in just before the wait began is still acknowledged
+    const late = f.router.ownerSend(owner, { to: c.id, kind: 'request', text: 'One more' });
+    assert.deepEqual(f.router.pushAck(c.p, { messageIds: [late.messageId] }).delivered, [late.messageId]);
+    w2.end(false);
+    assert.equal((await pushed(c.p)).length, 1);
+    // a wait nobody closed holds pushes back for twice one call's hold, no longer
+    const w4 = f.router.localWait(a.p);
+    f.router.ownerSend(owner, { to: a.id, kind: 'request', text: 'Still there?' });
+    assert.equal(await w4.arrived, true);
+    assert.deepEqual(await pushed(a.p), []);
+    f.advance(2 * LOCAL_WAIT_SEC * 1000 + 1000);
+    assert.equal((await pushed(a.p)).length, 1);
+    w4.end(false);
+    // a session that closes ends its wait
+    const w3 = f.router.localWait(c.p);
+    f.router.leaveLocal(lab, c.id);
+    assert.equal(await w3.arrived, true);
+    assert.throws(() => w3.result(), code('SESSION_NOT_FOUND'));
+    w3.end(false);
 });
 
 test('resources: a session that ends gives back what it held, and a Codex thread\'s new bridge keeps it', async (t) => {
