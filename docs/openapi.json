@@ -3927,7 +3927,7 @@
     "/v1/tools/psr_local_wait": {
       "post": {
         "operationId": "psr_local_wait",
-        "summary": "Wait inside your turn until something arrives for you: a resource you are in line for becomes yours, or a message comes (a request, the reply to yours, the owner's). Only for when nothing is left but waiting and you must not end your turn (a goal or a loop keeps you going); otherwise just end your turn, since the same things reach you between turns. One call holds for up to 4 minutes, then returns what arrived (its messages are marked read, as psr_local_inbox does) or arrived: false: then call it again, as often as it takes, instead of looking at psr_local_inbox or psr_local_resources again. To wait for a resource, take it first with psr_local_take: waiting puts you in no line.",
+        "summary": "Wait inside your turn until something arrives for you: a resource you are in line for becomes yours, or a message comes (a request, the reply to yours, the owner's). Only for when nothing is left but waiting and you must not end your turn (a goal or a loop keeps you going); otherwise just end your turn, since the same things reach you between turns. One call holds for up to 100 seconds, then returns what arrived (its messages are marked read, as psr_local_inbox does) or arrived: false: then call it again, as often as it takes, instead of looking at psr_local_inbox or psr_local_resources again. To wait for a resource, take it first with psr_local_take: waiting puts you in no line.",
         "security": [
           {
             "bearerAuth": []

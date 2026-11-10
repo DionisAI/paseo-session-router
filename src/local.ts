@@ -100,10 +100,11 @@ export function localThread(headers: Record<string, string | string[] | undefine
 export const LOCAL_READ_TOOL = 'psr_local_forum_read', LOCAL_POST_TOOL = 'psr_local_forum_post', LOCAL_STATUS_TOOL = 'psr_local_status';
 export const LOCAL_RESOURCES_TOOL = 'psr_local_resources', LOCAL_TAKE_TOOL = 'psr_local_take', LOCAL_RELEASE_TOOL = 'psr_local_release';
 /** Waits inside a turn for what otherwise reaches a session between turns (a resource from the line, a message). One call
- * holds this long at most, then answers "nothing yet" and the session calls again: under what an agent allows one tool call
- * (Codex cuts it at 300 s; Claude Code gives up on one silent for 5 minutes), and short enough that the session's next
- * request still finds its 5-minute prompt cache. */
-export const LOCAL_WAIT_TOOL = 'psr_local_wait', LOCAL_WAIT_SEC = 240;
+ * holds this long at most, then answers "nothing yet" and the session calls again. Under what the agents allow one tool call:
+ * Claude Code moves an MCP call still running after 120 s to the background and hands the turn back to the model (its
+ * CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS; measured with 2.1.316), which is exactly what this wait is there to avoid; Codex cuts
+ * a call at 300 s. */
+export const LOCAL_WAIT_TOOL = 'psr_local_wait', LOCAL_WAIT_SEC = 100;
 /** Sessions waiting at once (each holds a connection). */
 export const LOCAL_WAITS_MAX = 48;
 export const LOCAL_WHO_TOOL = 'psr_local_who', LOCAL_SEND_TOOL = 'psr_local_send', LOCAL_REPLY_TOOL = 'psr_local_reply', LOCAL_INBOX_TOOL = 'psr_local_inbox', LOCAL_MESSAGE_STATUS_TOOL = 'psr_local_message_status';

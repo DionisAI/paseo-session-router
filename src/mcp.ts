@@ -141,8 +141,8 @@ export function streamWait(router: Router, p: Principal, req: HeldCall, res: Ser
     void w.arrived.then(arrived => {
         if (done) return;
         stop();
-        // a newer wait of this session took over: this call was given up on, it gets no result
-        if (arrived === null) { w.end(false); res.end(); return; }
+        // a newer wait of this session took over: this one took nothing and says so (its agent may still be waiting for it)
+        if (arrived === null) { w.end(false); res.end(event(text({ arrived: false, superseded: true, note: 'A newer psr_local_wait of this session took over; this call ends here and took nothing.' }, false))); return; }
         let body: unknown, isError = false;
         try { body = w.result(); } catch (e) { body = fault(e); isError = true; }
         let finished = false;

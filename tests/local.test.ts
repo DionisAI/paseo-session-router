@@ -624,6 +624,12 @@ test('local over HTTP: psr_local_wait is held as an event stream; a cancel gets 
         assert.equal(said.arrived, false); assert.match(said.note, /not in line for any resource/);
         // schema: no arguments
         assert.equal((await (await call(d, 'psr_local_wait', { seconds: 5 }, 13)).json()).result.isError, true);
+        // a newer wait of the same session ends the older one, which is answered (its agent may still be waiting for it)
+        const e = await joined(), first = await call(e, 'psr_local_wait', {}, 20), second = await call(e, 'psr_local_wait', {}, 21);
+        const over = blocks(await first.text()).at(-1), overBody = JSON.parse(over.result.content[0].text);
+        assert.deepEqual([over.id, over.result.isError, overBody.arrived, overBody.superseded], [20, false, false, true]);
+        assert.equal((await cancel(e, 21)).status, 202);
+        await second.text();
         // a shutdown answers the held call at once
         const hanging = await call(d, 'psr_local_wait', {}, 14, { token: 'tok-s' }), started = Date.now();
         await http.close(); closed = true;
