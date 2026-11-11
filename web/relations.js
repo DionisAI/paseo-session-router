@@ -1,8 +1,9 @@
 // 關係: who works with whom, drawn from what the Router recorded. Each machine is a column (the entries that give work, you,
 // Muse, Grokbot and the others, come first), each session a box, and each kind of link between two of them one arrow with a
 // count: 派工 (an entry or the planner gave it a turn), 交接 (a finished task was handed on), 呼叫服務 (psr_ask), 驗收 (an
-// arbiter seat checked its work), 建立 (who asked the Router for it) and 訊息 (local sessions writing to each other). An arrow
-// opens the tasks behind it; a box opens the session. Local sessions, creators and messages come with the console's shared load.
+// arbiter seat checked its work), 建立 (who asked the Router for it), 訊息 (local sessions writing to each other), 傳檔 and 幫手 (a
+// local session's request you approved: from it to the session the Router started for it). An arrow opens the tasks behind it; a
+// box opens the session. Local sessions, creators, messages and helper requests come with the console's shared load.
 const KINDS = {
     assign: { name: '派工', color: 'oklch(52% 0.13 250)' },
     handoff: { name: '交接', color: 'oklch(55% 0.15 150)' },
@@ -11,6 +12,7 @@ const KINDS = {
     created: { name: '建立', color: 'oklch(62% 0.02 250)' },
     message: { name: '訊息', color: 'oklch(56% 0.17 28)' },
     file: { name: '傳檔', color: 'oklch(50% 0.11 205)' },
+    helper: { name: '幫手', color: 'oklch(54% 0.16 345)' },
 };
 const WINDOWS = [[86400000, '最近 24 小時'], [7 * 86400000, '最近 7 天'], [30 * 86400000, '最近 30 天'], [0, '全部時間']];
 const W = 168, H = 44, GAP_Y = 14, COL_GAP = 88, PAD = 18, HEAD = 34, ARCH = 64;
@@ -101,6 +103,10 @@ export function createRelations(page, ctx) {
             const to = t.receivedBy ?? t.receiving; if (!to || !inWindow(t.createdAt) || (ui.mission !== 'all' && t.missionId !== ui.mission)) continue;
             link('file', fileNode(t.from), fileNode(to), { type: 'file', id: t.id, at: t.createdAt, text: t.name, size: t.size, state: t.state });
         }
+        for (const r of data.helpers?.requests ?? []) {
+            if (!r.sessionRef || !r.taskId || !inWindow(r.createdAt) || !inMission(r.taskId)) continue; // only what you approved
+            link('helper', localNode(r.from.memberId, r.from.name, r.from.hostId), sessionNode(r.sessionRef, r.hostId), { type: 'helper', id: r.requestId, task: r.taskId, at: r.createdAt, text: r.purpose ?? r.task.split('\n')[0], state: r.state });
+        }
         // nodes without a link stay out unless asked for (or chosen)
         const linked = new Set([...edges.values()].flatMap(e => [e.from, e.to]));
         if (ui.idle) { for (const s of data.sessions) sessionNode(s.id); for (const m of locals.values()) localNode(m.memberId); }
@@ -188,6 +194,7 @@ export function createRelations(page, ctx) {
             if (it.type === 'task') { const t = byId.get(it.id); return t ? `<li><button type="button" class="link" data-task="${esc(t.id)}">${esc(ctx.taskTitle(t))}</button> <span class="muted">${esc(STATE_NAMES[t.state] ?? t.state)} · ${esc(relTime(t.createdAt))}</span></li>` : ''; }
             if (it.type === 'ask') return `<li><button type="button" class="link" data-task="${esc(it.task)}">${esc(it.text)} 服務</button> <span class="muted">${esc(it.state)} · ${esc(relTime(it.at))}</span></li>`;
             if (it.type === 'created') return `<li><button type="button" class="link" data-session="${esc(it.id)}">建立</button> <span class="muted">${esc(relTime(it.at))}</span></li>`;
+            if (it.type === 'helper') return `<li><button type="button" class="link" data-task="${esc(it.task)}">${esc(String(it.text).slice(0, 60))}</button> <span class="muted">${esc({ running: '進行中', done: '完成', failed: '失敗', canceled: '已取消' }[it.state] ?? it.state)} · ${esc(relTime(it.at))}</span></li>`;
             if (it.type === 'file') return `<li><b>${esc(it.text)}</b> <span class="muted">${it.size < 1048576 ? `${Math.max(1, Math.round(it.size / 1024))} KB` : `${(it.size / 1048576).toFixed(1)} MB`} · ${it.state === 'received' ? '已收' : '正在收'} · ${esc(relTime(it.at))}</span></li>`;
             return `<li><b>${it.kind === 'request' ? '請求' : '通知'}</b> ${esc(String(it.text).slice(0, 140))} <span class="muted">${esc(it.state ?? '')} · ${esc(relTime(it.at))}</span></li>`;
         };

@@ -67,7 +67,7 @@ export function createViews(page, ctx) {
     // ---------- 機器: machine → sessions ----------
     function machinesFrame() {
         return `<section class="pg-panel pg-machines" aria-label="機器與 session">
-          <header class="pg-head"><h2>機器</h2><span id="pg-host-count"></span>${ctx.isAdmin() ? '<button type="button" class="park-btn ghost" id="pg-resources" title="共用資源：誰拿著、誰在排隊">資源</button>' : ''}${ctx.isAdmin() ? '<button type="button" class="park-btn ghost" id="pg-peers" title="本機 session 之間的請求和通知；超過上限的會停下來等你放行">訊息</button>' : ''}${ctx.isAdmin() ? '<button type="button" class="park-btn ghost" id="pg-check-logins" title="問每台機器的 Paseo：Claude 和 Codex 有沒有登入、什麼時候到期">檢查登入</button>' : ''}<input id="pg-session-q" type="search" placeholder="搜尋 session、目錄、模型" value="${esc(ui.sessionQ)}"></header>
+          <header class="pg-head"><h2>機器</h2><span id="pg-host-count"></span>${ctx.isAdmin() ? '<button type="button" class="park-btn ghost" id="pg-resources" title="共用資源：誰拿著、誰在排隊">資源</button>' : ''}${ctx.isAdmin() ? '<button type="button" class="park-btn ghost" id="pg-helpers" title="本機 session 請求的幫手：到別台機器或別的資料夾做一個任務，你批准後才開始">幫手</button>' : ''}${ctx.isAdmin() ? '<button type="button" class="park-btn ghost" id="pg-peers" title="本機 session 之間的請求和通知；超過上限的會停下來等你放行">訊息</button>' : ''}${ctx.isAdmin() ? '<button type="button" class="park-btn ghost" id="pg-check-logins" title="問每台機器的 Paseo：Claude 和 Codex 有沒有登入、什麼時候到期">檢查登入</button>' : ''}<input id="pg-session-q" type="search" placeholder="搜尋 session、目錄、模型" value="${esc(ui.sessionQ)}"></header>
           <div id="pg-host-list" class="pg-hosts"></div>
           <p class="pg-group pg-session-title" id="pg-session-title"></p><div id="pg-session-chips" class="pg-chips"></div>
           <div id="pg-session-list" class="pg-scroll"></div></section>`;
@@ -78,6 +78,8 @@ export function createViews(page, ctx) {
         $('#pg-host-count').textContent = `${hosts.length} 台`;
         const pb = $('#pg-peers'), held = data.peers?.held ?? 0;
         if (pb) { pb.textContent = held ? `訊息 · ${held} 等你放行` : '訊息'; pb.classList.toggle('is-alert', held > 0); }
+        const hb = $('#pg-helpers'), asking = data.helpers?.pending ?? 0;
+        if (hb) { hb.textContent = asking ? `幫手 · ${asking} 等你批准` : '幫手'; hb.classList.toggle('is-alert', asking > 0); }
         const rb = $('#pg-resources'), rs = data.resources?.resources ?? [], waiting = rs.reduce((n, r) => n + r.waiting.length, 0);
         if (rb) { rb.textContent = waiting ? `資源 · ${waiting} 排隊` : `資源${rs.length ? ` ${rs.length}` : ''}`; rb.classList.toggle('is-alert', waiting > 0); }
         const card = h => {
@@ -338,6 +340,7 @@ export function createViews(page, ctx) {
 
     function bindFrame() {
         const q = $('#pg-session-q'); if (q) q.oninput = () => { ui.sessionQ = q.value; renderSessions(); markSelected(); };
+        const hb = $('#pg-helpers'); if (hb) hb.onclick = () => ctx.select({ kind: 'helpers', id: 'all' });
         const pb = $('#pg-peers'); if (pb) pb.onclick = () => ctx.select({ kind: 'peers', id: 'all' });
         const rb = $('#pg-resources'); if (rb) rb.onclick = () => ctx.select({ kind: 'resources', id: 'all' });
         const fb = $('#pg-transfers'); if (fb) fb.onclick = () => ctx.select({ kind: 'transfers', id: 'all' });

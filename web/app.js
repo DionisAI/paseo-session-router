@@ -5,9 +5,10 @@ let token = sessionStorage.getItem('psr-token') ?? '', identity = null, snapshot
 let park = null, parkLoading = null, stream = null, toastTimer;
 // Templates change only with the Router's config (or a rename): read them at connect and at most once a minute after that.
 let templates = null, templatesAt = 0;
-// Local sessions and who created what (psr_get_tree) and the messages between local sessions (psr_peer_messages, owner only)
+// Local sessions and who created what (psr_get_tree), the messages between local sessions (psr_peer_messages) and the helpers
+// they ask for (psr_list_helper_requests; both owner only)
 // change less often than tasks: read at connect, right after one of your actions, and otherwise at most every 10 s.
-let tree = null, peers = null, resources = null, transfers = null, extrasAt = 0, extrasDue = true;
+let tree = null, peers = null, resources = null, transfers = null, helpers = null, extrasAt = 0, extrasDue = true;
 const isAdmin = () => !!identity?.scopes?.includes('admin');
 function toast(message, error = false) { const t = $('#toast'); t.textContent = message; t.className = error ? 'error' : ''; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.hidden = true, 6500); }
 async function request(path, args) { const res = await fetch(path, { method: args === undefined ? 'GET' : 'POST', headers: { authorization: `Bearer ${token}`, ...(args === undefined ? {} : { 'content-type': 'application/json' }) }, ...(args === undefined ? {} : { body: JSON.stringify(args) }) }); const data = await res.json(); if (!res.ok)
@@ -41,7 +42,7 @@ async function showPark() {
     if (snapshot) park.update(parkData());
 }
 // The Router's own wake-up turns for the planner are not user work: they show under the Router, not in the task garden.
-const parkData = () => ({ identity, hosts: hostInfo, sessions, tasks: tasks.filter(t => !t.system), plannerTurns: tasks.filter(t => t.system), messages, permissions, policy, goals, asks, templates, tree, peers, resources, transfers });
+const parkData = () => ({ identity, hosts: hostInfo, sessions, tasks: tasks.filter(t => !t.system), plannerTurns: tasks.filter(t => t.system), messages, permissions, policy, goals, asks, templates, tree, peers, resources, transfers, helpers });
 let parkLive = ['連線中', false]; // the park may finish loading after the stream connects
 const setLive = (text, ok) => { parkLive = [text, ok]; park?.setStreamState(text, ok); };
 $('#login-form').addEventListener('submit', async (e) => { e.preventDefault(); token = $('#token').value.trim(); $('#login-error').textContent = ''; try {
@@ -69,9 +70,9 @@ function refresh() { refreshTimer ??= setTimeout(() => { refreshTimer = null; if
 async function fetchAll(reconnect) {
     try {
         const extras = reconnect || extrasDue || Date.now() - extrasAt > 10000; extrasDue = false;
-        const [top, ss, tt, hh, mm, pp, po, gg, aa, tl, tr, pm, rs, tf] = await Promise.all([tool('psr_get_topology', {}), tool('psr_list_sessions', { limit: 200 }), tool('psr_list_tasks', {}), tool('psr_list_hosts'), tool('psr_wait_messages', { all: true, timeoutMs: 0 }).catch(() => ({ messages: [] })), tool('psr_list_permissions').catch(() => ({ permissions: [] })), tool('psr_get_policy').catch(() => null), tool('psr_list_goals', { limit: 200 }).catch(() => ({ goals: [] })), tool('psr_list_asks', { limit: 200 }).catch(() => ({ asks: [] })), reconnect || !templates || Date.now() - templatesAt > 60000 ? tool('psr_list_templates').catch(() => null) : null,
-            extras ? tool('psr_get_tree', { of: 'sessions' }).catch(() => null) : null, extras && isAdmin() ? tool('psr_peer_messages', { state: 'all', limit: 200 }).catch(() => null) : null, extras && isAdmin() ? tool('psr_list_resources').catch(() => null) : null, extras && isAdmin() ? tool('psr_list_transfers').catch(() => null) : null]);
-        snapshot = top; sessions = ss.sessions; tasks = tt.tasks; hostInfo = hh; messages = mm.messages; permissions = pp.permissions; policy = po; goals = gg.goals; asks = aa.asks ?? []; if (tl) { templates = tl; templatesAt = Date.now(); } if (extras) { if (tr) tree = tr; if (pm || !isAdmin()) peers = pm; if (rs || !isAdmin()) resources = rs; if (tf || !isAdmin()) transfers = tf; extrasAt = Date.now(); }
+        const [top, ss, tt, hh, mm, pp, po, gg, aa, tl, tr, pm, rs, tf, hp] = await Promise.all([tool('psr_get_topology', {}), tool('psr_list_sessions', { limit: 200 }), tool('psr_list_tasks', {}), tool('psr_list_hosts'), tool('psr_wait_messages', { all: true, timeoutMs: 0 }).catch(() => ({ messages: [] })), tool('psr_list_permissions').catch(() => ({ permissions: [] })), tool('psr_get_policy').catch(() => null), tool('psr_list_goals', { limit: 200 }).catch(() => ({ goals: [] })), tool('psr_list_asks', { limit: 200 }).catch(() => ({ asks: [] })), reconnect || !templates || Date.now() - templatesAt > 60000 ? tool('psr_list_templates').catch(() => null) : null,
+            extras ? tool('psr_get_tree', { of: 'sessions' }).catch(() => null) : null, extras && isAdmin() ? tool('psr_peer_messages', { state: 'all', limit: 200 }).catch(() => null) : null, extras && isAdmin() ? tool('psr_list_resources').catch(() => null) : null, extras && isAdmin() ? tool('psr_list_transfers').catch(() => null) : null, extras && isAdmin() ? tool('psr_list_helper_requests', { state: 'all', limit: 100 }).catch(() => null) : null]);
+        snapshot = top; sessions = ss.sessions; tasks = tt.tasks; hostInfo = hh; messages = mm.messages; permissions = pp.permissions; policy = po; goals = gg.goals; asks = aa.asks ?? []; if (tl) { templates = tl; templatesAt = Date.now(); } if (extras) { if (tr) tree = tr; if (pm || !isAdmin()) peers = pm; if (rs || !isAdmin()) resources = rs; if (tf || !isAdmin()) transfers = tf; if (hp || !isAdmin()) helpers = hp; extrasAt = Date.now(); }
         park?.update(parkData());
         if (reconnect || !stream)
             startStream(top.streamCursor);

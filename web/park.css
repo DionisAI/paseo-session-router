@@ -756,3 +756,12 @@ button.ask-row { cursor: pointer; } button.ask-row:hover { background: var(--pap
 .login-cmd { display: flex; align-items: center; gap: 8px; margin-top: 3px; }
 .login-cmd code { flex: 1; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 11.5px; padding: 4px 8px; border-radius: 8px; background: var(--paper); border: 1px solid var(--line); user-select: all; }
 .login-cmd .park-btn { padding: 3px 9px; font-size: 12px; }
+
+/* 幫手: a request waiting for your decision, with the whole task and where it would run */
+.helper-row .helper-cwd { overflow-wrap: anywhere; }
+.helper-row .helper-own { background: oklch(93% 0.07 75); color: oklch(42% 0.13 60); margin: 0 0 0 6px; }
+.helper-row .helper-task span { max-height: 12em; }
+.helper-row.is-held .helper-task span { max-height: 28em; }
+.helper-row .helper-who { font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
+.helper-row input[type=text] { font: inherit; font-size: 12.5px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 5px 9px; min-width: 0; }
+.helper-row .perm-actions { margin: 2px 0 0; }

@@ -17,7 +17,7 @@ import type { RouterConfig } from '../src/types.js';
 import type { PeerMessage } from '../src/peer.js';
 
 const owner = principal();
-const LOCAL_TOOLS = ['psr_local_forum_post', 'psr_local_forum_read', 'psr_local_inbox', 'psr_local_message_status', 'psr_local_receive_file', 'psr_local_release', 'psr_local_reply', 'psr_local_resources', 'psr_local_send', 'psr_local_send_file', 'psr_local_status', 'psr_local_take', 'psr_local_wait', 'psr_local_who'];
+const LOCAL_TOOLS = ['psr_local_forum_post', 'psr_local_forum_read', 'psr_local_helper_request', 'psr_local_helper_result', 'psr_local_helpers', 'psr_local_inbox', 'psr_local_message_status', 'psr_local_receive_file', 'psr_local_release', 'psr_local_reply', 'psr_local_resources', 'psr_local_send', 'psr_local_send_file', 'psr_local_status', 'psr_local_take', 'psr_local_wait', 'psr_local_who'];
 const place = (cwd: string | null, repo: string | null = null, branch: string | null = null) => ({ cwd, repo, branch });
 async function setup(change?: (c: RouterConfig) => void) {
     const f = await fixture(c => { c.hosts.find(h => h.id === 'dev2')!.humanApproval = true; change?.(c); });

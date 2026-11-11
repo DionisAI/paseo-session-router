@@ -746,13 +746,13 @@ export function createPark(root, api) {
         state.firstMessageLoad = false;
         // HUD numbers
         const running = d.tasks.filter(t => ACTIVE.has(t.state)).length, queued = d.tasks.filter(t => t.state === 'queued').length;
-        const attention = d.tasks.filter(t => ATTENTION.has(t.state)).length + d.sessions.filter(s => s.externalActivity).length + (d.peers?.held ?? 0);
+        const attention = d.tasks.filter(t => ATTENTION.has(t.state)).length + d.sessions.filter(s => s.externalActivity).length + (d.peers?.held ?? 0) + (d.helpers?.pending ?? 0);
         const today = d.tasks.filter(t => t.state === 'completed' && t.updatedAt >= startOfDay()).length;
         const counter = $('#park-counter', root); if (counter) counter.innerHTML = `<b>${running}</b><span>個任務進行中</span><small>今日完成 ${today}${attention ? ` · 等你 ${attention}` : ''}</small>`;
         $('#park-stats', root).innerHTML = [['運行中', running, 'run'], ['排隊', queued, 'queue'], ['需留意', attention, 'warn'], ['今日完成', today, 'done']].map(([k, v, c]) => `<div class="park-stat park-stat-${c}${v ? ' has' : ''}"><b>${v}</b><span>${k}</span></div>`).join('');
         // 需留意 takes you to the first session that needs a look, waiting approvals first.
         const warn = $('.park-stat-warn', root), firstWarn = (d.permissions ?? [])[0]?.sessionRef ?? d.tasks.find(t => ATTENTION.has(t.state))?.target ?? d.sessions.find(s => s.externalActivity)?.id;
-        if (warn && (firstWarn || d.peers?.held)) { warn.classList.add('is-link'); warn.title = firstWarn ? '查看需要留意的 session' : '查看等你放行的訊息'; warn.onclick = () => select(firstWarn ? { kind: 'session', id: firstWarn } : { kind: 'peers', id: 'all' }); }
+        if (warn && (firstWarn || d.peers?.held || d.helpers?.pending)) { warn.classList.add('is-link'); warn.title = firstWarn ? '查看需要留意的 session' : d.helpers?.pending ? '查看等你批准的幫手請求' : '查看等你放行的訊息'; warn.onclick = () => select(firstWarn ? { kind: 'session', id: firstWarn } : d.helpers?.pending ? { kind: 'helpers', id: 'all' } : { kind: 'peers', id: 'all' }); }
         syncAsks(d);
         // open goals hang on the town hall's notice board, a yellow note for a plan waiting for approval
         const open = (d.goals ?? []).filter(g => !['done', 'failed', 'canceled'].includes(g.state)).slice(0, 6), noteSig = open.map(g => g.originKind + g.state).join();
@@ -1432,6 +1432,14 @@ export function createPark(root, api) {
         el.querySelectorAll('form.res-edit').forEach(f => f.onsubmit = e => { e.preventDefault(); const id = f.dataset.res || f.elements.namedItem('id').value.trim(), desc = f.description.value.trim();
             if (new TextEncoder().encode(desc).length > 300) return api.toast('說明最多 300 bytes（中文約 100 字）', true);
             run(f.querySelector('[type=submit]'), async () => { const r = await api.act('psr_set_resource', { resourceId: id, slots: Number(f.slots.value), remindAfterMinutes: Number(f.remind.value), description: desc }); delete f.dataset.dirty; return r; }, () => f.dataset.res ? `${id} 已儲存` : `已登記 ${id}`); });
+        el.querySelectorAll('form[data-helper]').forEach(f => {
+            twoStep(f, b => run(b, () => api.act('psr_decide_helper', { requestId: f.dataset.helper, decision: 'approve' }), r => r.state === 'running' ? '已批准：任務已送給幫手' : r.state === 'failed' ? `批准了，但沒能開始：${r.error ?? ''}` : '已批准'));
+            const no = f.querySelector('[data-helper-reject]'), why = f.elements.namedItem('why');
+            if (no) no.onclick = () => run(no, () => api.act('psr_decide_helper', { requestId: f.dataset.helper, decision: 'reject', ...(why?.value.trim() ? { note: why.value.trim() } : {}) }), () => '已拒絕，提出的 session 會被告知');
+            if (why) why.onkeydown = e => { if (e.key === 'Enter') e.preventDefault(); }; // Enter in the reason must not approve
+        });
+        el.querySelectorAll('[data-goto-helpers]').forEach(b => b.onclick = () => select({ kind: 'helpers', id: 'all' }));
+        el.querySelectorAll('[data-goto-task]').forEach(b => b.onclick = () => select({ kind: 'task', id: b.dataset.gotoTask }));
         el.querySelectorAll('[data-goto-resources]').forEach(b => b.onclick = () => select({ kind: 'resources', id: 'all' }));
         el.querySelectorAll('[data-goto-transfers]').forEach(b => b.onclick = () => select({ kind: 'transfers', id: 'all' }));
         el.querySelectorAll('[data-resume]').forEach(b => b.onclick = () => run(b, () => api.act('psr_resume_session', { sessionRef: b.dataset.resume }), () => '已恢復派工，排著的任務會依序送出'));
@@ -1527,7 +1535,7 @@ export function createPark(root, api) {
           <dl><dt>狀態</dt><dd>${m.live ? '在線' : `沒回應（最後聯絡 ${esc(relTime(m.lastSeenAt))}）`}</dd><dt>分支</dt><dd>${m.branch ? esc(`${m.repo ?? ''}@${m.branch}`) : '沒有 git，按目錄'}</dd>
             <dt>客戶端</dt><dd>${esc(m.client?.name ?? '')}${m.client?.version ? ` ${esc(m.client.version)}` : ''}${m.thread ? ' · Codex thread' : ''}</dd><dt>加入</dt><dd>${esc(relTime(m.startedAt))}</dd><dt>收訊息</dt><dd>${esc(TAKES[m.takes]?.[0] ?? m.takes)}</dd></dl>
           ${admin ? `<form class="takes-form" data-member="${esc(m.memberId)}"><label>收訊息的方式<select name="mode">${Object.entries(TAKES).map(([k, [n]]) => `<option value="${k}"${m.takes === k ? ' selected' : ''}>${n}</option>`).join('')}</select></label><p class="inspector-hint">${esc(TAKES[m.takes]?.[1] ?? '')}</p></form>
-            <h3>訊息</h3>${mine.length ? mine.map(x => peerRow(x, m.memberId)).join('') : '<p class="muted">還沒有。</p>'}
+            ${helperBlock(m.memberId)}<h3>訊息</h3>${mine.length ? mine.map(x => peerRow(x, m.memberId)).join('') : '<p class="muted">還沒有。</p>'}
             <form class="peer-send" data-to="${esc(m.memberId)}"><h3>以你的名義發訊息</h3><select name="kind" aria-label="種類"><option value="notice">通知：告訴它一件事</option><option value="request">請求：它要回你一次</option></select>
               <textarea name="text" rows="2" required maxlength="2000" placeholder="要告訴它什麼"></textarea>${m.provider === 'claude' ? '<label class="check"><input type="checkbox" name="urgent"> 急件：在它這一輪裡就送進去，不等這一輪結束</label>' : ''}
               <div class="inspector-actions"><button type="submit" class="park-btn primary">送出</button><span class="inspector-hint">請求的回覆會出現在上面</span></div></form>` : ''}
@@ -1535,6 +1543,39 @@ export function createPark(root, api) {
             <form class="forum-form" data-forum="${esc(m.forum)}"><textarea name="text" rows="2" required maxlength="2000" placeholder="留給這個分支上的本機 session 看（不會叫醒任何人）"></textarea><button type="submit" class="park-btn primary">貼上</button></form>
             <p class="inspector-hint">同一個倉庫和分支（沒有 git 時同一個目錄）上的本機 session 共用；它們開工和接新工作前會讀。</p></details>` : ''}
           ${filesBlock(filesOf(m.memberId), '送收的檔案')}`;
+    }
+    // ---------- 幫手: a local session asks for a session on another machine or in another folder to do one task. Nothing starts
+    // until you approve it here; the task then runs as yours and its result goes back to the session that asked ----------
+    const helpersNow = () => state.data.helpers?.requests ?? [];
+    const HELPER_STATE = { pending: ['等你批准', 'warn'], starting: ['啟動中', 'run'], running: ['進行中', 'run'], done: ['完成', 'done'], failed: ['失敗', 'err'], canceled: ['已取消', 'off'], rejected: ['你拒絕了', 'off'], expired: ['過期，沒人決定', 'off'] };
+    function helperRow(r, me = null) {
+        const [txt, cls] = HELPER_STATE[r.state] ?? [r.state, 'muted'], pending = r.state === 'pending' && canEdit(), [prov, ...model] = String(r.provider).split('/');
+        const host = state.data.hosts.hosts.find(h => h.id === r.hostId), left = Math.max(1, Math.round((r.expiresAt - Date.now()) / 3600000));
+        const who = r.from.gone ? `${esc(r.from.name)} <span class="muted">（已離開）</span>` : r.from.memberId === me ? '它' : `<button type="button" class="link" data-goto-local="${esc(r.from.memberId)}">${esc(r.from.name)}</button>${r.from.live ? '' : ' <span class="muted">（不在線）</span>'}`;
+        const session = r.sessionRef ? `<button type="button" class="link" data-goto-session="${esc(r.sessionRef)}">${esc(r.sessionName ?? '幫手 session')}</button>` : '';
+        const task = r.taskId ? ` · <button type="button" class="link" data-goto-task="${esc(r.taskId)}">任務${r.taskState ? `（${esc(STATE_NAMES[r.taskState] ?? r.taskState)}）` : ''}</button>` : '';
+        return `<form class="peer-row helper-row${pending ? ' is-held' : ''}" data-helper="${esc(r.requestId)}" data-armed-text="再按一次確定批准">
+          <p><b>${r.followUp ? '接著問' : '新幫手'}</b><span class="login-state state-${cls}">${esc(txt)}</span></p>
+          <small class="helper-who">${who} → ${esc(host?.label ?? r.hostId)}</small>
+          <small class="mono helper-cwd">${esc(r.cwd)}${r.customCwd ? ' <em class="t-kind helper-own">請求自己指定的資料夾</em>' : ''}</small>
+          <small>${esc(provider({ provider: r.provider }).name ?? prov)} · ${esc(model.join('/'))} · ${esc(modeWords(r))}${r.followUp && session ? ` · 送給 ${session}` : ''}</small>
+          ${r.purpose ? `<small>用途：${esc(r.purpose)}</small>` : ''}
+          <div class="ask-quote helper-task"><small>任務全文 · agent 寫的，批准後原樣送給幫手</small><span>${esc(r.task)}</span></div>
+          <small>${esc(relTime(r.createdAt))}提出${pending ? ` · 再 ${left} 小時沒決定就過期` : ''}${!r.followUp && session ? ` · ${session}` : ''}${task}${r.decisionNote ? ` · 你說：${esc(r.decisionNote)}` : ''}${r.error ? ` · ${esc(r.error)}` : ''}</small>
+          ${pending ? `<input name="why" type="text" maxlength="100" placeholder="要拒絕的話，可以給它一句原因" aria-label="拒絕的原因">
+            <div class="perm-actions"><button type="submit" class="park-btn">批准</button><button type="button" class="park-btn" data-helper-reject>拒絕</button></div>
+            <p class="inspector-hint">${r.followUp ? '批准後，這個任務送給同一個幫手 session。' : `批准後，Router 在 ${esc(host?.label ?? r.hostId)} 的這個資料夾建一個新 session，把任務以你的名義送給它。`}${host?.ownerApprovalOnly ? '這台只有你能批：它要做的每個動作還會再來問你。' : ''}${r.from.gone ? '<b>提出的 session 已經離開</b>（關掉了，或它的機器睡了超過 30 分鐘）：批准的話幫手照樣做，但結果沒有人收，只會留在任務頁。' : ''}</p>` : ''}</form>`;
+    }
+    const helperBlock = id => { const rs = helpersNow().filter(r => r.from.memberId === id).slice(0, 5); return rs.length ? `<h3>它請求的幫手 · ${rs.length}</h3>${rs.map(r => helperRow(r, id)).join('')}` : ''; };
+    /** On a session that is a helper: who asked for it. */
+    const helperOf = ref => { const rs = helpersNow().filter(r => r.sessionRef === ref && r.taskId); if (!rs.length) return ''; const r = rs.at(-1);
+        return `<p class="pol-line">幫手 · <button type="button" class="link" data-goto-local="${esc(r.from.memberId)}">${esc(r.from.name)}</button> 請求的${rs.length > 1 ? `，共 ${rs.length} 個任務` : ''} · <button type="button" class="link" data-goto-helpers>看請求</button></p>`; };
+    function helpersPanel() {
+        const hs = state.data.helpers, all = hs?.requests ?? [], pending = all.filter(r => r.state === 'pending'), open = all.filter(r => r.state === 'starting' || r.state === 'running'), rest = all.filter(r => !['pending', 'starting', 'running'].includes(r.state)).slice(0, 20);
+        return `<p class="eyebrow">本機 session</p><h2>幫手</h2><p class="inspector-text">本機 session 要到別台機器、或別的資料夾做事時，在這裡請求一個幫手：Router 新建的 session，只做那一個任務，結果回到提出請求的 session。你批准之前什麼都不會開始，24 小時沒決定就過期。</p>
+          ${!hs ? '<p class="muted">讀不到幫手請求（只有你看得到）。</p>' : `<h3>等你批准 · ${pending.length}</h3>${pending.length ? pending.map(r => helperRow(r)).join('') : '<p class="muted">沒有。</p>'}
+          ${open.length ? `<h3>進行中 · ${open.length}</h3>${open.map(r => helperRow(r)).join('')}` : ''}
+          <h3>最近</h3>${rest.length ? rest.map(r => helperRow(r)).join('') : '<p class="muted">還沒有。</p>'}${hs.more ? '<p class="inspector-hint">只列出最近 100 個。</p>' : ''}`}`;
     }
     function peersPanel() {
         const ps = state.data.peers, all = ps?.messages ?? [], held = all.filter(x => x.delivery === 'held'), rest = all.filter(x => x.delivery !== 'held').slice(0, 20);
@@ -1620,9 +1661,11 @@ export function createPark(root, api) {
     function twoStep(f, go) {
         f.onsubmit = e => { e.preventDefault(); const b = f.querySelector('[type=submit]'); f.dataset.label ??= b.textContent;
             // armed, the form counts as being edited, so a live redraw (Safari never focuses a clicked button) does not disarm it
-            const reset = () => { delete f.dataset.armed; delete f.dataset.dirty; b.textContent = f.dataset.label; b.classList.remove('primary'); };
+            // (text typed into the form keeps it dirty, so a redraw does not take it away)
+            const reset = () => { delete f.dataset.armed; if (![...f.querySelectorAll('input[type=text], textarea')].some(i => i.value.trim())) delete f.dataset.dirty; b.textContent = f.dataset.label; b.classList.remove('primary'); };
             if (f.dataset.armed !== '1') { f.dataset.armed = '1'; f.dataset.dirty = '1'; b.textContent = f.dataset.armedText; b.classList.add('primary'); setTimeout(() => { if (f.isConnected && f.dataset.armed === '1' && !b.disabled) reset(); }, 6000); return; }
-            go(b, reset); };
+            // an action that failed leaves the form on screen with its button enabled again: it must take two clicks once more
+            Promise.resolve(go(b, reset)).then(() => { if (f.isConnected && !b.disabled) reset(); }); };
     }
     // 建 session: the machine's templates (seat templates are the owner's, created from 權限). Each row is a form, so a live
     // redraw never takes the button away between its two clicks.
@@ -1677,7 +1720,7 @@ export function createPark(root, api) {
               ${s.description ? `<p class="inspector-text">${esc(s.description)}</p>` : ''}
               ${s.providerLimit ? `<p class="inspector-hint state-warn">${s.providerLimit.kind === 'login' ? '登入失效' : '額度用完'}（${esc(relTime(s.providerLimit.since))}）：${esc(s.providerLimit.notice.slice(0, 160))}。${s.providerLimit.kind === 'login' ? '在那台機器上重新登入後，在機器詳情裡按「重新檢查這台」就解除；下一輪完成後也會解除。' : '下一輪完成後自動解除。'}</p>` : ''}<dl><dt>狀態</dt><dd>${esc(STATE_NAMES[s.nativeStatus] ?? s.nativeStatus)}${s.externalActivity ? ' · 有人直接在用' : ''}</dd><dt>模型</dt><dd>${esc(s.provider)}</dd><dt>Session ID</dt><dd class="mono">${esc(s.id)}</dd></dl>
               ${pauseBlock(s)}
-              ${canEdit() ? claimsLine(s.id) : ''}
+              ${canEdit() ? claimsLine(s.id) : ''}${canEdit() ? helperOf(s.id) : ''}
               ${permissionBox(s)}
               ${sessionAsks(s)}
               ${composer(s)}
@@ -1705,6 +1748,7 @@ export function createPark(root, api) {
             const m = localMember(sel.id); if (!m) { state.selected = null; el.hidden = true; return; }
             html = localDetail(m);
         } else if (sel.kind === 'peers') html = peersPanel();
+        else if (sel.kind === 'helpers') html = helpersPanel();
         else if (sel.kind === 'resources') html = resourcesPanel();
         else if (sel.kind === 'transfers') html = transfersPanel();
         else if (sel.kind === 'calls') html = callsPanel(sel.id);
