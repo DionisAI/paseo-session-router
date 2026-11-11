@@ -10,7 +10,7 @@ import { Store } from './store.js';
 import { Transfers, TRANSFER_INBOX, TRANSFER_MAX_BYTES, TRANSFER_B64_PART_BYTES, asText, TRANSFER_SENT_NOTE, TRANSFER_RECEIVED_NOTE, normalizeCode, secretPath, workspacePath, type Transfer, type TransferParty } from './transfers.js';
 import { channelTools, SEND_FILE_TOOL, VERDICT_TOOL, TAKE_TOOL, FORUM_READ_TOOL, FORUM_KEEP, FORUM_PAGE, FORUM_PAGE_MAX, FORUM_POSTS_PER_HOUR, FORUM_TEXT_BYTES, FORUM_UNTRUSTED, FORUM_POSTED_NOTE, forumHint } from './agent-channel.js';
 import { SEAT_MODES, OWNER_APPROVAL_MODES, approvalsGoToPerson } from './config.js';
-import { HELPER_TASK_BYTES, HELPER_PURPOSE_BYTES, HELPER_NOTE_BYTES, HELPER_OPEN_PER_MEMBER, HELPER_PER_HOUR, HELPER_PENDING_PER_MACHINE, HELPER_PENDING_MS, HELPER_START_MS, HELPER_KEEP_MS, HELPER_EXCERPT_BYTES, HELPER_OPEN, helperFolderProblem, foldersOverlap, helperTitle, helperLabel, helperPrompt, type HelperRequest, type HelperState } from './helper.js';
+import { HELPER_TASK_BYTES, HELPER_PURPOSE_BYTES, HELPER_NOTE_BYTES, HELPER_OPEN_PER_MEMBER, HELPER_PER_HOUR, HELPER_PENDING_PER_MACHINE, HELPER_PENDING_MS, HELPER_START_MS, HELPER_KEEP_MS, HELPER_EXCERPT_BYTES, HELPER_OPEN, HELPER_AUTO_PER_DAY, helperFolderProblem, foldersOverlap, ruleCoversFolder, checkHelperRules, helperTitle, helperLabel, helperPrompt, type HelperRequest, type HelperState, type HelperAutoRule } from './helper.js';
 import { LOCAL_CLOSED_KEEP_MS, LOCAL_CREDENTIAL_DAYS, LOCAL_LIVE_MS, LOCAL_MEMBERS_MAX, LOCAL_SILENT_MS, LOCAL_STATUS_BYTES, LOCAL_TOKEN_PREFIX, LOCAL_TOUCH_MS, LOCAL_WAITS_MAX, LOCAL_WAIT_SEC, isAgentHome, isLocalForumKey, localForum, localName, localProvider, type LocalCredential, type LocalMember, type LocalPlace } from './local.js';
 import { PEER_BRIDGE_POLL_MS, PEER_TEXT_BYTES, PEER_REQUESTS_PER_HOUR, PEER_MESSAGES_PER_HOUR, PEER_PAIR_BURST, PEER_PAIR_WINDOW_MS, PEER_TTL_MS, PEER_KEEP_MS, PEER_PAGE, PEER_PUSH_WAIT_MAX_MS, PEER_HOOK_EVENTS, PEER_MODES, PEER_UNTRUSTED, isThreadId, pairKey, partyKey, peerEnvelope, type PeerKind, type PeerMessage, type PeerMode, type PeerParty } from './peer.js';
 import { RESOURCE_ID, RESOURCE_PREFIX, RESOURCES_MAX, RESOURCE_SLOTS_MAX, RESOURCE_QUEUE_MAX, RESOURCE_NOTE_BYTES, RESOURCE_DESCRIPTION_BYTES, RESOURCE_REMIND_MIN, RESOURCE_REMIND_MAX, RESOURCE_KEEP_MS, RESOURCE_TURN_WAIT_MS, remindAfter, isPaseoHolder, resourceTurnPrompt, type ResourceTurn, type Resource, type ResourceClaim } from './resources.js';
@@ -391,7 +391,7 @@ export class Router extends EventEmitter {
     private policy(): PolicyState {
         const stored = this.store.get<PolicyState>('policy', 'main');
         return { approvers: { ...DEFAULT_APPROVERS, ...stored?.approvers, L4: [] }, rules: stored?.rules ?? [], disabled: stored?.disabled ?? [], ceilings: stored?.ceilings ?? {}, grants: stored?.grants ?? {},
-            planner: { sessionRef: null, creation: null, templateId: null, enabled: false, batchMs: 60000, maxTurnsPerHour: 20, lastFeedAt: 0, fedUpTo: 0, ...stored?.planner }, approvalTimeoutMs: stored?.approvalTimeoutMs ?? 2 * 3600000, verification: { profiles: stored?.verification?.profiles ?? [], requireForGoalDone: stored?.verification?.requireForGoalDone ?? false }, a2a: { services: stored?.a2a?.services ?? DEFAULT_A2A.services, deliveryMax: stored?.a2a?.deliveryMax ?? DEFAULT_A2A.deliveryMax }, updatedAt: stored?.updatedAt ?? 0, by: stored?.by ?? 'default' };
+            planner: { sessionRef: null, creation: null, templateId: null, enabled: false, batchMs: 60000, maxTurnsPerHour: 20, lastFeedAt: 0, fedUpTo: 0, ...stored?.planner }, approvalTimeoutMs: stored?.approvalTimeoutMs ?? 2 * 3600000, verification: { profiles: stored?.verification?.profiles ?? [], requireForGoalDone: stored?.verification?.requireForGoalDone ?? false }, a2a: { services: stored?.a2a?.services ?? DEFAULT_A2A.services, deliveryMax: stored?.a2a?.deliveryMax ?? DEFAULT_A2A.deliveryMax }, helpers: { auto: stored?.helpers?.auto ?? [] }, updatedAt: stored?.updatedAt ?? 0, by: stored?.by ?? 'default' };
     }
     private savePolicy(next: PolicyState, by: string) { this.store.put('policy', 'main', { ...next, updatedAt: this.now(), by }, null, null, this.now()); this.changed(); }
     /** A front-end's scopes: the owner's ceiling (once set in the console) narrowed by what the planner granted. Other entries,
@@ -417,13 +417,26 @@ export class Router extends EventEmitter {
             approvalTimeoutMs: pol.approvalTimeoutMs,
             verification: { ...pol.verification, seats: this.seatRecords('arbiter').map(r => { const s = this.store.get<Session>('session', r.data.sessionRef!); return { sessionRef: r.data.sessionRef!, profileId: r.data.profileId ?? null, profileExists: pol.verification.profiles.some(x => x.id === r.data.profileId), hostId: s?.hostId ?? null, name: s ? this.annotation('session', s.id)?.displayName ?? s.title : r.data.sessionRef!, provider: s?.provider ?? null, present: !!s?.present, revoked: !!r.data.channelRevoked, credentialExpired: !!(r.data.tokenExp && r.data.tokenExp <= this.now()), busy: !!s && (!!s.activeTurnId || s.nativeStatus === 'running') }; }) },
             a2a: { ...pol.a2a, ...this.a2aState(pol) },
+            // standing rules for helpers, and the templates a rule may name (none on an owner-only machine)
+            helpers: { auto: pol.helpers.auto, perDay: HELPER_AUTO_PER_DAY, templates: this.helperTemplates().filter(t => !this.ownerOnlyHost(this.daemon(t.daemonId).hostId)).map(t => { const x = this.presentTemplate(t); return { id: x.id, title: x.title, hostId: x.hostId, provider: x.provider, modeId: x.modeId, folder: x.cwd }; }) },
             updatedAt: pol.updatedAt || null, by: pol.by,
         };
     }
     /** Owner edits from the console. L4 stays owner-only whatever is sent; a ceiling change trims the planner's grant to it. */
-    setPolicy(p: Principal, input: { approvers?: Record<string, unknown>; rules?: unknown; disabled?: unknown; ceilings?: Record<string, unknown>; planner?: { enabled?: boolean; batchMs?: number; maxTurnsPerHour?: number }; approvalTimeoutMs?: number; verification?: { profiles?: unknown; requireForGoalDone?: boolean }; a2a?: unknown }) {
+    setPolicy(p: Principal, input: { approvers?: Record<string, unknown>; rules?: unknown; disabled?: unknown; ceilings?: Record<string, unknown>; planner?: { enabled?: boolean; batchMs?: number; maxTurnsPerHour?: number }; approvalTimeoutMs?: number; verification?: { profiles?: unknown; requireForGoalDone?: boolean }; a2a?: unknown; helpers?: { auto?: unknown; add?: unknown; remove?: unknown } }) {
         requireScope(p, 'admin');
         const pol = this.policy();
+        if (input.helpers !== undefined) {
+            // one change at a time: add or remove one rule on the list as it is now (two consoles with different snapshots then
+            // cannot bring back a rule the other removed), or replace the whole list
+            const h = input.helpers, keys = h && typeof h === 'object' && !Array.isArray(h) ? Object.keys(h) : [];
+            assert(keys.length === 1 && ['auto', 'add', 'remove'].includes(keys[0]) && (h.remove === undefined || typeof h.remove === 'string'), 'INVALID_ARGUMENT', 'helpers: exactly one of {auto: [rules]}, {add: rule} or {remove: ruleId}');
+            const cur = pol.helpers.auto, stored = (r: Omit<HelperAutoRule, 'by' | 'at'>) => { const was = cur.find(x => x.id === r.id); return was && stable({ ...was, by: 0, at: 0 }) === stable({ ...r, by: 0, at: 0 }) ? was : null; };
+            const next = h.auto !== undefined ? h.auto : h.add !== undefined ? [...cur, h.add] : cur.filter(x => x.id !== h.remove);
+            const rules = checkHelperRules(next, { host: id => this.config.hosts.some(x => x.id === id), template: id => this.helperRuleTemplateProblem(id) }, r => !!stored(r));
+            // a rule that is as it was keeps who set it; a new or changed one is this client's, from now
+            pol.helpers = { auto: rules.map(r => stored(r) ?? { ...r, by: p.clientId, at: this.now() }) };
+        }
         if (input.a2a !== undefined) pol.a2a = checkA2A(input.a2a, pol.a2a, this.config.hosts.map(h => h.id));
         if (input.approvalTimeoutMs !== undefined) {
             assert(Number.isSafeInteger(input.approvalTimeoutMs) && (input.approvalTimeoutMs === 0 || (input.approvalTimeoutMs >= 600000 && input.approvalTimeoutMs <= 7 * 86400000)), 'INVALID_ARGUMENT', 'approvalTimeoutMs: 0 (never) or 600000..604800000');
@@ -2178,7 +2191,7 @@ export class Router extends EventEmitter {
     }
     /** A request as its own session sees it. */
     private helperView(r: HelperRequest) {
-        return { requestId: r.id, state: this.helperState(r), templateId: r.templateId, hostId: r.hostId, provider: r.provider, modeId: r.modeId, cwd: r.cwd, customCwd: r.customCwd, helper: r.root, task: r.task, purpose: r.purpose, createdAt: r.createdAt, expiresAt: r.expiresAt, decidedAt: r.decidedAt, decisionNote: r.decisionNote, finishedAt: r.finishedAt, error: r.error, taskState: (r.taskId ? this.store.task(r.taskId)?.state : undefined) ?? null };
+        return { requestId: r.id, state: this.helperState(r), auto: r.rule ?? null, templateId: r.templateId, hostId: r.hostId, provider: r.provider, modeId: r.modeId, cwd: r.cwd, customCwd: r.customCwd, helper: r.root, task: r.task, purpose: r.purpose, createdAt: r.createdAt, expiresAt: r.expiresAt, decidedAt: r.decidedAt, decisionNote: r.decisionNote, finishedAt: r.finishedAt, error: r.error, taskState: (r.taskId ? this.store.task(r.taskId)?.state : undefined) ?? null };
     }
     /** A request as the owner sees it: also who asks, the helper session and its task. */
     private helperAdminView(r: HelperRequest) {
@@ -2198,9 +2211,11 @@ export class Router extends EventEmitter {
             const h = this.presentHost(this.config.hosts.find(h => h.id === hostId)!), ds = [...new Set(ts.map(daemonOf).filter(d => d.hostId === hostId))];
             return { hostId, name: h.label, description: h.description, rules: h.rules, ownerOnly: h.ownerApprovalOnly, online: ds.some(d => this.store.get<DaemonObservation>('daemon', d.id)?.connection === 'online'), anyFolder: ds.some(d => !!d.autoMap) };
         });
-        const templates = ts.map(t => { const x = this.presentTemplate(t); return { templateId: x.id, title: x.title, description: x.description, hostId: daemonOf(t).hostId, provider: x.provider, modeId: x.modeId, folder: x.cwd }; });
+        // what a standing rule of the owner would start for this session without waiting, and in which folders of its own choice
+        const autoOf = (t: SessionTemplate) => { const rules = this.ownerOnlyHost(daemonOf(t).hostId) ? [] : this.policy().helpers.auto.filter(x => (x.templateId === '*' || x.templateId === t.id) && (x.from === '*' || x.from === me.hostId) && this.principalOf(x.by)?.scopes.includes('admin')); return rules.length ? [...new Set(rules.flatMap(x => x.folders))] : null; };
+        const templates = ts.map(t => { const x = this.presentTemplate(t), auto = autoOf(t); return { templateId: x.id, title: x.title, description: x.description, hostId: daemonOf(t).hostId, provider: x.provider, modeId: x.modeId, folder: x.cwd, autoApproved: !!auto, ...(auto?.length ? { autoFolders: auto } : {}) }; });
         const requests = this.helperRequests().filter(r => r.memberId === me.id).sort((a, b) => b.seq - a.seq).slice(0, 10).map(r => this.helperView(r));
-        return { hosts, templates, requests, note: 'A helper is a new session the Router starts for one task of yours on another machine or in another folder; ask with psr_local_helper_request. A template says which machine, model and permission mode; where anyFolder is true a request may name another folder there (cwd). A machine\'s rules bind its helper too: put what matters into the task. Nothing runs until the owner approves the request in the console.' };
+        return { hosts, templates, requests, note: 'A helper is a new session the Router starts for one task of yours on another machine or in another folder; ask with psr_local_helper_request. A template says which machine, model and permission mode; where anyFolder is true a request may name another folder there (cwd). A machine\'s rules bind its helper too: put what matters into the task. Nothing runs until the owner approves the request in the console, except where autoApproved is true: there a standing rule of the owner starts your request at once (in the template\'s folder, and in autoFolders or below them; * = any folder).' };
     }
     /** psr_local_helper_request: asks the owner for a helper (a template, and a folder of its own where the machine maps any), or
      * for a follow-up to an earlier request's helper session. Nothing starts here. Asking the same again while it is open changes
@@ -2262,7 +2277,7 @@ export class Router extends EventEmitter {
      * and submits the task in the owner's name, through the same checks as any task of the owner. A start that cannot happen
      * now (the machine offline, the Router at a limit) leaves the request undecided and is the owner's to try again; any other
      * failure ends the request and is told to the session that asked. Rejected: that session is told, with the owner's word. */
-    async decideHelper(p: Principal, input: { requestId: string; decision: 'approve' | 'reject'; note?: string }) {
+    async decideHelper(p: Principal, input: { requestId: string; decision: 'approve' | 'reject'; note?: string }, rule: string | null = null) {
         requireScope(p, 'admin');
         const r = this.store.get<HelperRequest>('helper_request', input.requestId);
         assert(r, 'NOT_FOUND', 'Unknown helper request', 404);
@@ -2276,7 +2291,7 @@ export class Router extends EventEmitter {
             return this.helperAdminView(no);
         }
         // from here the request is taken: a second approval finds it no longer pending
-        let cur = this.putHelper(r, { state: 'starting', decidedAt: this.now(), decidedBy: p.clientId, decisionNote: note });
+        let cur = this.putHelper(r, { state: 'starting', decidedAt: this.now(), decidedBy: p.clientId, decisionNote: note, rule });
         this.changed();
         try {
             if (!cur.sessionRef) {
@@ -2295,12 +2310,50 @@ export class Router extends EventEmitter {
             cur = this.putHelper(cur, { state: 'running', taskId: task.id });
         } catch (e) {
             const again = e instanceof Fault && ['HOST_OFFLINE', 'CAPACITY_EXCEEDED', 'CAPABILITY_UNAVAILABLE', 'STALE_TARGET'].includes(e.code);
-            if (again) { this.putHelper(cur, { state: 'pending', decidedAt: null, decidedBy: null, decisionNote: null }); this.changed(); throw e; }
+            if (again) { this.putHelper(cur, { state: 'pending', decidedAt: null, decidedBy: null, decisionNote: null, rule: null }); this.changed(); throw e; }
             cur = this.putHelper(cur, { state: 'failed', finishedAt: this.now(), error: truncateBytes(redact(errorMessage(e)), 300) });
-            this.tellHelper(cur, `Your helper request ${label} was approved but could not be started: ${cur.error}`);
+            // (under a standing rule the answer to the session's own call says it too, but that call may no longer be listening)
+            this.tellHelper(cur, `Your helper request ${label} ${rule ? `was covered by the owner's standing rule ${rule}` : 'was approved'} but could not be started: ${cur.error}`);
         }
         this.changed();
         return this.helperAdminView(cur);
+    }
+    private ownerOnlyHost(hostId: string) { return !!this.config.hosts.find(h => h.id === hostId)?.humanApproval; }
+    /** Why a standing rule cannot name this template, or null: it must be one helpers may use, on a machine that is not owner-only. */
+    private helperRuleTemplateProblem(templateId: string): string | null {
+        try { const { d } = this.helperPlace(templateId, undefined); return this.ownerOnlyHost(d.hostId) ? `is on ${d.hostId}, an owner-only machine: helpers there are always approved by the owner, one by one` : null; }
+        catch { return 'is not a template helpers may use (psr_get_policy lists them under helpers.templates)'; }
+    }
+    /** The owner's standing rule that starts this request now, with the owner it starts as; or why a rule that covers it does
+     * not (an owner-only machine, the day's limit), or nothing when no rule covers it. A rule covers a request by its template,
+     * the machine that asks and, when the request chose its own folder, that folder. It counts only while the client that set
+     * it is still an admin. */
+    private helperAuto(r: HelperRequest): { rule: HelperAutoRule; owner: Principal } | { rule: null; why: string | null } {
+        const found = this.policy().helpers.auto.map(x => ({ x, owner: this.principalOf(x.by) })).find(({ x, owner }) => (x.templateId === '*' || x.templateId === r.templateId) && (x.from === '*' || x.from === r.fromHostId) && (!r.customCwd || ruleCoversFolder(x.folders, r.cwd)) && !!owner?.scopes.includes('admin'));
+        if (!found) return { rule: null, why: null };
+        if (this.ownerOnlyHost(r.hostId)) return { rule: null, why: `Host ${r.hostId} is owner-only: a helper there is always approved by the owner, one by one.` };
+        const day = this.helperRequests().filter(x => x.credentialId === r.credentialId && !!x.rule && (x.decidedAt ?? 0) > this.now() - 86400000).length;
+        if (day >= HELPER_AUTO_PER_DAY) return { rule: null, why: `The owner's standing rule ${found.x.id} covers this, but ${HELPER_AUTO_PER_DAY} helpers were already started without asking from this machine in the last 24 hours: this one waits for the owner.` };
+        return { rule: found.x, owner: found.owner! };
+    }
+    /** psr_local_helper_request: records the request (localHelperRequest) and, where a standing rule of the owner covers it,
+     * starts it at once as the owner who set that rule. Asking the same again reaches a request that still waits, so a rule
+     * set since, or a machine back online, starts it then. A start that cannot happen now leaves it waiting for the owner. */
+    async localHelperAsk(p: Principal, input: { template?: string; cwd?: string; helper?: string; task: string; purpose?: string }) {
+        const asked = this.localHelperRequest(p, input);
+        if (asked.state !== 'pending') return asked;
+        const r = this.store.get<HelperRequest>('helper_request', asked.requestId)!, auto = this.helperAuto(r);
+        if (!auto.rule) return auto.why ? { ...asked, note: `${asked.note} ${auto.why}` } : asked;
+        const now = () => ({ ...this.helperView(this.store.get<HelperRequest>('helper_request', r.id)!), masked: asked.masked });
+        try {
+            const done = await this.decideHelper(auto.owner, { requestId: r.id, decision: 'approve' }, auto.rule.id);
+            return { ...now(), note: done.state === 'running'
+                ? `${r.id} started at once under the owner's standing rule ${auto.rule.id}: no approval was needed. When the helper is done its result reaches you as a Router notice between your turns (through psr_local_wait if you must not stop), and all of it with psr_local_helper_result: go on with what does not need it, do not ask again and do not poll.`
+                : `The owner's standing rule ${auto.rule.id} covers ${r.id}, but it could not be started: ${done.error}. Nothing runs; ask again if you still need it.` };
+        } catch (e) {
+            if (e instanceof Fault && e.code === 'NOT_PENDING') { const v = now(); return { ...v, note: `${r.id} was decided meanwhile: it is ${v.state}. Its result reaches you between your turns; do not ask again.` }; }
+            return { ...now(), note: `The owner's standing rule ${auto.rule.id} covers this, but it could not be started now (${e instanceof Fault ? `${e.code}: ` : ''}${truncateBytes(errorMessage(e), 200)}). ${r.id} waits for the owner's approval in the console; asking the same again later tries once more.` };
+        }
     }
     /** Each tick: undecided requests past their day expire, a helper's ended task is told to the session that asked, a request the
      * Router stopped in the middle of starting fails, and settled ones go after HELPER_KEEP_MS. */

@@ -1438,6 +1438,12 @@ export function createPark(root, api) {
             if (no) no.onclick = () => run(no, () => api.act('psr_decide_helper', { requestId: f.dataset.helper, decision: 'reject', ...(why?.value.trim() ? { note: why.value.trim() } : {}) }), () => '已拒絕，提出的 session 會被告知');
             if (why) why.onkeydown = e => { if (e.key === 'Enter') e.preventDefault(); }; // Enter in the reason must not approve
         });
+        el.querySelectorAll('form.helper-rule-new').forEach(f => f.onsubmit = e => { e.preventDefault(); const hp = helperRules(); if (!hp) return;
+            const scope = f.scope.value, folders = scope === 'any' ? ['*'] : scope === 'list' ? f.folders.value.split('\n').map(x => x.trim()).filter(Boolean) : [], note = f.note.value.trim();
+            if (scope === 'list' && !folders.length) return api.toast('列出至少一個資料夾，或改選別的選項', true);
+            const rule = { id: `r${Date.now().toString(36)}`, templateId: f.template.value, from: f.from.value, folders, ...(note ? { note } : {}) };
+            run(f.querySelector('[type=submit]'), async () => { const r = await api.act('psr_set_policy', { helpers: { add: rule } }); delete f.dataset.dirty; return r; }, () => '已新增：符合的請求之後不用等你'); });
+        el.querySelectorAll('form[data-helper-rule-remove]').forEach(f => twoStep(f, b => run(b, () => api.act('psr_set_policy', { helpers: { remove: f.dataset.helperRuleRemove } }), () => '已移除：這類請求之後又會等你')));
         el.querySelectorAll('[data-goto-helpers]').forEach(b => b.onclick = () => select({ kind: 'helpers', id: 'all' }));
         el.querySelectorAll('[data-goto-task]').forEach(b => b.onclick = () => select({ kind: 'task', id: b.dataset.gotoTask }));
         el.querySelectorAll('[data-goto-resources]').forEach(b => b.onclick = () => select({ kind: 'resources', id: 'all' }));
@@ -1561,7 +1567,7 @@ export function createPark(root, api) {
           <small>${esc(provider({ provider: r.provider }).name ?? prov)} · ${esc(model.join('/'))} · ${esc(modeWords(r))}${r.followUp && session ? ` · 送給 ${session}` : ''}</small>
           ${r.purpose ? `<small>用途：${esc(r.purpose)}</small>` : ''}
           <div class="ask-quote helper-task"><small>任務全文 · agent 寫的，批准後原樣送給幫手</small><span>${esc(r.task)}</span></div>
-          <small>${esc(relTime(r.createdAt))}提出${pending ? ` · 再 ${left} 小時沒決定就過期` : ''}${!r.followUp && session ? ` · ${session}` : ''}${task}${r.decisionNote ? ` · 你說：${esc(r.decisionNote)}` : ''}${r.error ? ` · ${esc(r.error)}` : ''}</small>
+          <small>${esc(relTime(r.createdAt))}提出${pending ? ` · 再 ${left} 小時沒決定就過期` : ''}${!r.followUp && session ? ` · ${session}` : ''}${task}${r.auto ? ` · <b class="helper-auto">自動批准</b>（${esc(helperRuleName(r.auto))}）` : ''}${r.decisionNote ? ` · 你說：${esc(r.decisionNote)}` : ''}${r.error ? ` · ${esc(r.error)}` : ''}</small>
           ${pending ? `<input name="why" type="text" maxlength="100" placeholder="要拒絕的話，可以給它一句原因" aria-label="拒絕的原因">
             <div class="perm-actions"><button type="submit" class="park-btn">批准</button><button type="button" class="park-btn" data-helper-reject>拒絕</button></div>
             <p class="inspector-hint">${r.followUp ? '批准後，這個任務送給同一個幫手 session。' : `批准後，Router 在 ${esc(host?.label ?? r.hostId)} 的這個資料夾建一個新 session，把任務以你的名義送給它。`}${host?.ownerApprovalOnly ? '這台只有你能批：它要做的每個動作還會再來問你。' : ''}${r.from.gone ? '<b>提出的 session 已經離開</b>（關掉了，或它的機器睡了超過 30 分鐘）：批准的話幫手照樣做，但結果沒有人收，只會留在任務頁。' : ''}</p>` : ''}</form>`;
@@ -1570,10 +1576,32 @@ export function createPark(root, api) {
     /** On a session that is a helper: who asked for it. */
     const helperOf = ref => { const rs = helpersNow().filter(r => r.sessionRef === ref && r.taskId); if (!rs.length) return ''; const r = rs.at(-1);
         return `<p class="pol-line">幫手 · <button type="button" class="link" data-goto-local="${esc(r.from.memberId)}">${esc(r.from.name)}</button> 請求的${rs.length > 1 ? `，共 ${rs.length} 個任務` : ''} · <button type="button" class="link" data-goto-helpers>看請求</button></p>`; };
+    // 自動批准: the owner's standing rules (policy helpers.auto). A request a rule covers starts without waiting, as the owner
+    // who set the rule; never on a machine only the owner approves on, and only so many a day from one machine.
+    const helperRules = () => state.data.policy?.helpers ?? null;
+    const helperRuleName = id => { const r = helperRules()?.auto.find(x => x.id === id); return r?.note || `規則 ${id}`; };
+    const ruleFolders = r => r.folders.includes('*') ? '請求自己指定的任意資料夾也自動' : r.folders.length ? `模板自己的資料夾，以及 ${r.folders.join('、')}（含底下的）` : '只有模板自己的資料夾';
+    function helperRulesBlock() {
+        const hp = helperRules(); if (!hp || !canEdit()) return '';
+        const tpl = id => { const t = hp.templates.find(x => x.id === id); return id === '*' ? '所有模板' : t ? `${t.title} · ${hostLabel(t.hostId)}` : `${id}（設定裡已經沒有）`; };
+        const row = r => `<form class="tpl-row" data-helper-rule-remove="${esc(r.id)}" data-armed-text="再按一次移除"><p><b>${esc(tpl(r.templateId))}</b><small>${r.from === '*' ? '任何機器的 session 提出' : `${esc(hostLabel(r.from))} 的 session 提出`}</small></p>
+          <small>${esc(ruleFolders(r))}</small><small>${r.note ? `${esc(r.note)} · ` : ''}${esc(clientName(r.by))} ${esc(relTime(r.at))}設定</small><div class="inspector-actions"><button type="submit" class="park-btn ghost">移除</button></div></form>`;
+        const askers = state.data.hosts.hosts.filter(h => !h.ownerApprovalOnly), locked = state.data.hosts.hosts.filter(h => h.ownerApprovalOnly).map(h => h.label);
+        return `<h3>自動批准 · ${hp.auto.length} 條規則</h3>${hp.auto.length ? hp.auto.map(row).join('') : '<p class="muted">沒有規則：每個請求都等你。</p>'}
+          <details class="task-more" data-open-key="helper-rule:new"><summary>新增自動批准規則</summary>
+            <form class="res-edit helper-rule-new"><label>哪個模板<select name="template"><option value="*">所有模板</option>${hp.templates.map(t => `<option value="${esc(t.id)}">${esc(t.title)} · ${esc(hostLabel(t.hostId))} · ${esc(modeWords(t))}</option>`).join('')}</select></label>
+              <label>哪台機器上的 session 提出的<select name="from"><option value="*">任何機器</option>${askers.map(h => `<option value="${esc(h.id)}">${esc(h.label)}</option>`).join('')}</select></label>
+              <label>請求自己指定資料夾時<select name="scope"><option value="template">不自動（只有模板自己的資料夾自動）</option><option value="list">下面列的資料夾和它們底下的也自動</option><option value="any">任意資料夾都自動</option></select></label>
+              <label>資料夾，每行一個絕對路徑<textarea name="folders" rows="2" placeholder="/data"></textarea></label>
+              <label>備註<input name="note" maxlength="60" placeholder="可不填，會顯示在自動批准的請求上"></label>
+              <div class="inspector-actions"><button type="submit" class="park-btn primary">新增規則</button></div></form>
+            <p class="inspector-hint">符合規則的請求不用等你：Router 直接建 session，以你的名義派任務，卡片上會標「自動批准」。每台機器 24 小時內最多自動啟動 ${hp.perDay} 個，超過的照舊等你。${locked.length ? `只有你能批的機器（${esc(locked.join('、'))}）永遠不自動。` : ''}已經在等的請求不會被追溯：手動批准，或讓提出的 session 再提一次。</p></details>`;
+    }
     function helpersPanel() {
         const hs = state.data.helpers, all = hs?.requests ?? [], pending = all.filter(r => r.state === 'pending'), open = all.filter(r => r.state === 'starting' || r.state === 'running'), rest = all.filter(r => !['pending', 'starting', 'running'].includes(r.state)).slice(0, 20);
-        return `<p class="eyebrow">本機 session</p><h2>幫手</h2><p class="inspector-text">本機 session 要到別台機器、或別的資料夾做事時，在這裡請求一個幫手：Router 新建的 session，只做那一個任務，結果回到提出請求的 session。你批准之前什麼都不會開始，24 小時沒決定就過期。</p>
+        return `<p class="eyebrow">本機 session</p><h2>幫手</h2><p class="inspector-text">本機 session 要到別台機器、或別的資料夾做事時，在這裡請求一個幫手：Router 新建的 session，只做那一個任務，結果回到提出請求的 session。除了符合下面「自動批准」規則的，你批准之前什麼都不會開始；24 小時沒決定就過期。</p>
           ${!hs ? '<p class="muted">讀不到幫手請求（只有你看得到）。</p>' : `<h3>等你批准 · ${pending.length}</h3>${pending.length ? pending.map(r => helperRow(r)).join('') : '<p class="muted">沒有。</p>'}
+          ${helperRulesBlock()}
           ${open.length ? `<h3>進行中 · ${open.length}</h3>${open.map(r => helperRow(r)).join('')}` : ''}
           <h3>最近</h3>${rest.length ? rest.map(r => helperRow(r)).join('') : '<p class="muted">還沒有。</p>'}${hs.more ? '<p class="inspector-hint">只列出最近 100 個。</p>' : ''}`}`;
     }

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, principal, code } from './helpers.js';
 import { execute, visibleTools } from '../src/tools.js';
-import { HELPER_KEEP_MS, HELPER_PENDING_MS, HELPER_PENDING_PER_MACHINE, HELPER_PER_HOUR, HELPER_TASK_BYTES, helperFolderProblem } from '../src/helper.js';
+import { HELPER_AUTO_PER_DAY, HELPER_AUTO_RULES_MAX, HELPER_KEEP_MS, HELPER_PENDING_MS, HELPER_PENDING_PER_MACHINE, HELPER_PER_HOUR, HELPER_TASK_BYTES, helperFolderProblem } from '../src/helper.js';
 import { LOCAL_SILENT_MS } from '../src/local.js';
 import type { Principal, RouterConfig } from '../src/types.js';
 
@@ -371,4 +371,187 @@ test('helpers: the planner\'s template and folder are the Router\'s own, like a 
     assert.throws(() => f.router.localHelperRequest(a.p, { template: 'lab-planner', cwd: '/data/elsewhere', task: 'x' }), code('NOT_FOUND'));
     assert.throws(() => f.router.localHelperRequest(a.p, { template: 'lab-codex', cwd: '/srv/planner', task: 'x' }), code('FOLDER_RESERVED'));
     assert.throws(() => f.router.localHelperRequest(a.p, { template: 'lab-codex', cwd: '/srv/planner/notes', task: 'x' }), code('FOLDER_RESERVED'));
+});
+
+// ---------- standing rules: the owner approves in advance ----------
+const rule = (x: { id: string; templateId?: string; from?: string; folders?: string[]; note?: string }) => ({ templateId: 'lab-codex', from: '*', folders: [], ...x });
+type S = Awaited<ReturnType<typeof setup>>;
+const rowOf = (s: S, requestId: string) => s.f.router.listHelperRequests(owner, {}).requests.find(x => x.requestId === requestId)!;
+/** Lets a running helper finish, and takes the notice about it out of the requester's way. */
+async function finish(s: S, requestId: string, p: Principal, text = 'Done.') {
+    await s.f.router.tick();
+    s.lab.finish(s.sessionOf(rowOf(s, requestId).sessionRef).nativeId, text);
+    await s.f.router.tick();
+    return s.pushed(p);
+}
+
+test('helpers: a standing rule of the owner starts a covered request at once, as the owner who set it; what it does not cover still waits', async (t) => {
+    const s = await setup(), { f, gpu, cred, join, lab } = s; t.after(f.close);
+    const a = join(gpu, '/w/app'), b = join(gpu, '/w/b'), other = join(cred('lab3'), '/w/elsewhere');
+    // nothing is automatic until the owner says so
+    assert.deepEqual(f.router.getPolicy(owner).helpers.auto, []);
+    const before = await f.router.localHelperAsk(a.p, { template: 'lab-codex', task: 'Before any rule' });
+    assert.deepEqual([before.state, before.auto], ['pending', null]);
+    const pol = f.router.setPolicy(owner, { helpers: { auto: [rule({ id: 'lab', from: 'gpu1', note: 'weekly counts' })] } });
+    assert.deepEqual(pol.helpers.auto.map(r => [r.id, r.templateId, r.from, r.folders, r.note, r.by]), [['lab', 'lab-codex', 'gpu1', [], 'weekly counts', 'web']]);
+    assert.equal(pol.helpers.perDay, HELPER_AUTO_PER_DAY);
+    // what already waits stays with the owner; asking the same again, now that a rule covers it, starts it
+    await f.router.tick();
+    assert.equal(rowOf(s, before.requestId).state, 'pending');
+    const sessions = f.sessions().length;
+    const first = await f.router.localHelperAsk(a.p, { template: 'lab-codex', task: 'Before any rule' });
+    assert.deepEqual([first.requestId, first.state, first.auto], [before.requestId, 'running', 'lab']);
+    assert.match(first.note, /started at once under the owner's standing rule lab/);
+    assert.equal(f.sessions().length, sessions + 1);
+    const row = rowOf(s, first.requestId), task = f.store.task(row.taskId!)!;
+    assert.deepEqual([row.state, row.auto, row.decidedBy, task.originKind, task.principalId, task.missionId], ['running', 'lab', 'web', 'web', 'owner', `helper-${first.requestId}`]);
+    // through the tool, as a session calls it
+    const tool = await execute(f.router, a.p, 'psr_local_helper_request', { template: 'lab-codex', task: 'Through the tool' }) as typeof first;
+    assert.deepEqual([tool.state, tool.auto], ['running', 'lab']);
+    // the result comes back as always
+    assert.match((await finish(s, first.requestId, a.p, 'Twelve.'))[0].text, /is done: completed\..*Twelve\./s);
+    await finish(s, tool.requestId, a.p);
+    // a follow-up to that helper is covered like the first
+    const more = await f.router.localHelperAsk(a.p, { helper: first.requestId, task: 'And yesterday?' });
+    assert.deepEqual([more.state, more.auto, rowOf(s, more.requestId).sessionRef], ['running', 'lab', row.sessionRef]);
+    // not covered: a folder of the request's own, another machine's session, another template
+    const own = await f.router.localHelperAsk(b.p, { template: 'lab-codex', cwd: '/data/elsewhere', task: 'Elsewhere' });
+    const far = await f.router.localHelperAsk(other.p, { template: 'lab-codex', task: 'From another machine' });
+    const dev = await f.router.localHelperAsk(b.p, { template: 'dev-claude', task: 'On the owner-only machine' });
+    assert.deepEqual([own.state, far.state, dev.state, own.auto], ['pending', 'pending', 'pending', null]);
+    assert.doesNotMatch(own.note, /standing rule/);
+    await f.router.tick();
+    assert.equal(lab.sends.filter(x => /Elsewhere|From another machine/.test(x.prompt)).length, 0);
+    // a session sees what would start without waiting
+    const mine = Object.fromEntries(f.router.localHelpers(a.p).templates.map(x => [x.templateId, x.autoApproved]));
+    assert.deepEqual([mine['lab-codex'], mine['dev-claude']], [true, false]);
+    assert.equal(f.router.localHelpers(other.p).templates.find(x => x.templateId === 'lab-codex')!.autoApproved, false);
+});
+
+test('helpers: a rule names the folders a request may choose itself; rules are checked, and none reaches an owner-only machine', async (t) => {
+    const s = await setup(), { f, gpu, join } = s; t.after(f.close);
+    const set = (auto: unknown) => f.router.setPolicy(owner, { helpers: { auto } } as never);
+    const ok = rule({ id: 'a' });
+    for (const bad of ['x', [{ ...ok, id: 'Bad Id' }], [ok, ok], [{ ...ok, templateId: 'nope' }], [{ ...ok, templateId: 'lab-seat' }], [{ ...ok, templateId: 'dev-claude' }], [{ ...ok, templateId: 'dev-auto' }], [{ ...ok, from: 'nowhere' }],
+        [{ ...ok, folders: 'any' }], [{ ...ok, folders: ['data'] }], [{ ...ok, folders: ['/'] }], [{ ...ok, folders: ['/data/../x'] }], [{ ...ok, folders: ['/data/'] }], [{ ...ok, folders: Array.from({ length: 11 }, (_, i) => `/d/${i}`) }],
+        [{ ...ok, color: 'red' }], [{ ...ok, note: 'two\nlines' }], [{ ...ok, note: 'x'.repeat(201) }], [{ id: 'a' }], Array.from({ length: HELPER_AUTO_RULES_MAX + 1 }, (_, i) => rule({ id: `r${i}` }))])
+        assert.throws(() => set(bad), code('INVALID_ARGUMENT'), JSON.stringify(bad).slice(0, 80));
+    assert.throws(() => f.router.setPolicy(muse, { helpers: { auto: [ok] } }), code('FORBIDDEN'));
+    assert.throws(() => f.router.setPolicy(owner, { helpers: { auto: [ok], extra: 1 } } as never), code('INVALID_ARGUMENT'));
+    // the templates a rule may name: none on an owner-only machine, no seat's
+    assert.deepEqual(f.router.getPolicy(owner).helpers.templates.map(x => [x.id, x.hostId]), [['lab-codex', 'lab3']]);
+    // folders: the one named, and anything below it
+    set([rule({ id: 'data', folders: ['/data'] })]);
+    const a = join(gpu, '/w/app'), b = join(gpu, '/w/b'), c = join(gpu, '/w/c'), d = join(gpu, '/w/d');
+    const below = await f.router.localHelperAsk(a.p, { template: 'lab-codex', cwd: '/data/MM-research', task: 'Below /data' });
+    const beside = await f.router.localHelperAsk(b.p, { template: 'lab-codex', cwd: '/database/x', task: 'Beside it' });
+    const away = await f.router.localHelperAsk(c.p, { template: 'lab-codex', cwd: '/srv/elsewhere/x', task: 'Somewhere else' });
+    assert.deepEqual([below.state, below.auto, beside.state, away.state], ['running', 'data', 'pending', 'pending']);
+    assert.deepEqual(f.router.localHelpers(a.p).templates.find(x => x.templateId === 'lab-codex')!.autoFolders, ['/data']);
+    // every template, any folder: still only folders a helper may work in, and still no owner-only machine
+    const all = set([rule({ id: 'all', templateId: '*', folders: ['*'] })]);
+    assert.deepEqual(all.helpers.auto.map(r => [r.id, r.templateId, r.folders]), [['all', '*', ['*']]]);
+    assert.equal((await f.router.localHelperAsk(b.p, { template: 'lab-codex', cwd: '/database/x', task: 'Beside it' })).state, 'running');
+    await assert.rejects(f.router.localHelperAsk(d.p, { template: 'lab-codex', cwd: '/home/ubuntu', task: 'Too wide' }), code('INVALID_ARGUMENT'));
+    const dev = await f.router.localHelperAsk(d.p, { template: 'dev-claude', task: 'On the owner-only machine' });
+    assert.equal(dev.state, 'pending'); assert.match(dev.note, /dev2 is owner-only: a helper there is always approved by the owner/);
+    // a rule set by a client whose access was revoked is nobody's
+    f.store.put('client_access', 'web', { revoked: true });
+    assert.equal((await f.router.localHelperAsk(d.p, { template: 'lab-codex', task: 'After the revocation' })).state, 'pending');
+    f.store.put('client_access', 'web', { revoked: false });
+    assert.equal((await f.router.localHelperAsk(d.p, { template: 'lab-codex', task: 'After the revocation' })).state, 'running');
+    // ... and so is one whose setter is no longer an admin (the configuration changed): no rule applies, the owner decides
+    const web = f.config.clients.find(x => x.clientId === 'web')!, scopes = web.scopes, g = join(gpu, '/w/g');
+    web.scopes = scopes.filter(x => x !== 'admin');
+    const demoted = await f.router.localHelperAsk(g.p, { template: 'lab-codex', task: 'After the demotion' });
+    assert.equal(demoted.state, 'pending'); assert.doesNotMatch(demoted.note, /standing rule/);
+    assert.equal(f.router.localHelpers(g.p).templates.find(x => x.templateId === 'lab-codex')!.autoApproved, false);
+    web.scopes = scopes;
+    // an unchanged rule keeps who set it; a changed one is the changer's
+    const cli = principal('cli');
+    const kept = f.router.setPolicy(cli, { helpers: { auto: [...all.helpers.auto, rule({ id: 'more' })] } }).helpers.auto;
+    assert.deepEqual(kept.map(r => [r.id, r.by]), [['all', 'web'], ['more', 'cli']]);
+    // the machine becomes owner-only (a config change and a restart): the rule no longer starts anything there
+    const e = join(gpu, '/w/e');
+    f.config.hosts.find(h => h.id === 'lab3')!.humanApproval = true;
+    f.config.templates.find(x => x.id === 'lab-codex')!.modeId = 'auto';
+    const late = await f.router.localHelperAsk(e.p, { template: 'lab-codex', task: 'Now owner-only' });
+    assert.equal(late.state, 'pending'); assert.match(late.note, /owner-only/);
+    assert.equal(f.router.localHelpers(e.p).templates.find(x => x.templateId === 'lab-codex')!.autoApproved, false);
+});
+
+test('helpers: so many a day start without the owner; past that they wait for the owner again', async (t) => {
+    const s = await setup(), { f, gpu, join } = s; t.after(f.close);
+    const a = join(gpu, '/w/app'), here = { cwd: '/w/app', repo: null, branch: null };
+    f.router.setPolicy(owner, { helpers: { auto: [rule({ id: 'lab' })] } });
+    for (let i = 0; i < HELPER_AUTO_PER_DAY; i++) {
+        if (i && i % HELPER_PER_HOUR === 0) { f.advance(3600001); f.router.touchLocal(gpu, a.id, here); }
+        const r = await f.router.localHelperAsk(a.p, { template: 'lab-codex', task: `Round ${i}` });
+        assert.equal(r.state, 'running', `round ${i}`);
+        await finish(s, r.requestId, a.p);
+    }
+    f.advance(3600001); f.router.touchLocal(gpu, a.id, here);
+    const over = await f.router.localHelperAsk(a.p, { template: 'lab-codex', task: 'One too many' });
+    assert.equal(over.state, 'pending');
+    assert.match(over.note, new RegExp(`rule lab covers this, but ${HELPER_AUTO_PER_DAY} helpers were already started without asking.*last 24 hours.*waits for the owner`));
+    // the owner still can, by hand; that one does not count
+    assert.equal((await f.router.decideHelper(owner, { requestId: over.requestId, decision: 'approve' })).auto, null);
+    await finish(s, over.requestId, a.p);
+    f.advance(24 * 3600000); f.router.touchLocal(gpu, a.id, here);
+    assert.equal((await f.router.localHelperAsk(a.p, { template: 'lab-codex', task: 'The next day' })).state, 'running');
+});
+
+test('helpers: a covered request that cannot start now waits for the owner, and asking it again later starts it; one that fails says so in the answer', async (t) => {
+    const s = await setup(), { f, gpu, join, pushed, lab } = s; t.after(f.close);
+    const a = join(gpu, '/w/app'), b = join(gpu, '/w/b');
+    f.router.setPolicy(owner, { helpers: { auto: [rule({ id: 'lab' })] } });
+    lab.online = false; await f.router.syncDirectory();
+    const r = await f.router.localHelperAsk(a.p, { template: 'lab-codex', task: 'While it is offline' });
+    assert.equal(r.state, 'pending');
+    assert.match(r.note, /rule lab covers this, but it could not be started now \(HOST_OFFLINE.*waits for the owner's approval.*asking the same again later/s);
+    assert.deepEqual([rowOf(s, r.requestId).auto, rowOf(s, r.requestId).decidedBy], [null, null]);
+    lab.online = true; await f.router.syncDirectory();
+    const again = await f.router.localHelperAsk(a.p, { template: 'lab-codex', task: 'While it is offline' });
+    assert.deepEqual([again.requestId, again.state, again.auto], [r.requestId, 'running', 'lab']);
+    lab.create = async () => { throw new Error('no such directory'); };
+    const bad = await f.router.localHelperAsk(b.p, { template: 'lab-codex', task: 'It will not start' });
+    assert.equal(bad.state, 'failed'); assert.match(bad.error!, /no such directory/); assert.match(bad.note, /could not be started/);
+    // the call that asked may no longer be listening by then: a notice says it too
+    assert.match((await pushed(b.p))[0].text, /was covered by the owner's standing rule lab but could not be started: .*no such directory/);
+});
+
+test('helpers: rules are added and removed one at a time against the list as it is now; a rule that went stale never blocks an edit', async (t) => {
+    const s = await setup(c => {
+        c.daemons.find(d => d.id === 'lab-test')!.mappings.push({ cwd: '/srv/second', projectId: 'hft', workspaceId: 'second', mutationDomainId: 'second', releasePolicy: 'on_turn_end' });
+        c.templates.push({ id: 'lab-second', daemonId: 'lab-test', cwd: '/srv/second', provider: 'codex/demo', title: 'Second' });
+    }), { f } = s; t.after(f.close);
+    const ids = () => f.router.getPolicy(owner).helpers.auto.map(r => r.id);
+    const set = (helpers: unknown) => f.router.setPolicy(owner, { helpers } as never);
+    // one at a time, on the current list: two consoles with different snapshots cannot undo each other
+    set({ add: rule({ id: 'one' }) });
+    set({ add: rule({ id: 'two', templateId: 'lab-second' }) });
+    assert.deepEqual(ids(), ['one', 'two']);
+    set({ remove: 'one' });
+    set({ add: rule({ id: 'three', folders: ['/data'] }) });
+    assert.deepEqual(ids(), ['two', 'three']);
+    set({ remove: 'never-there' });
+    assert.deepEqual(ids(), ['two', 'three']);
+    for (const bad of [{ add: rule({ id: 'two' }) }, { add: rule({ id: 'x' }), remove: 'two' }, { auto: [], add: rule({ id: 'x' }) }, { add: 'x' }, { remove: 7 }, { add: rule({ id: 'x', templateId: 'dev-claude' }) }, {}])
+        assert.throws(() => set(bad), code('INVALID_ARGUMENT'), JSON.stringify(bad));
+    assert.deepEqual(ids(), ['two', 'three']);
+    // the template of rule two leaves the configuration: that rule is inert now
+    f.config.templates.splice(f.config.templates.findIndex(x => x.id === 'lab-second'), 1);
+    assert.deepEqual(f.router.getPolicy(owner).helpers.templates.map(x => x.id), ['lab-codex']);
+    // ... and still every edit goes through: add beside it, send the list back as it was read, remove it
+    set({ add: rule({ id: 'four' }) });
+    const read = f.router.getPolicy(owner).helpers.auto;
+    assert.deepEqual(set({ auto: read }).helpers.auto.map(r => [r.id, r.by]), [['two', 'web'], ['three', 'web'], ['four', 'web']]);
+    // a stale rule cannot be changed into another stale rule, only kept or removed
+    assert.throws(() => set({ auto: read.map(r => r.id === 'two' ? { ...r, folders: ['/data'] } : r) }), code('INVALID_ARGUMENT'));
+    set({ remove: 'two' });
+    assert.deepEqual(ids(), ['three', 'four']);
+    // the template comes back: no rule names it any more
+    const a = s.join(s.gpu, '/w/app');
+    f.config.templates.push({ id: 'lab-second', daemonId: 'lab-test', cwd: '/srv/second', provider: 'codex/demo', title: 'Second' });
+    assert.equal((await f.router.localHelperAsk(a.p, { template: 'lab-second', task: 'No rule names this one any more' })).state, 'pending');
 });

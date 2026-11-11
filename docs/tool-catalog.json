@@ -1436,7 +1436,7 @@
   },
   {
     "name": "psr_set_policy",
-    "description": "ADMIN ONLY: set who may answer each level (planner, frontend; L4 stays the owner's), owner rules ({id, level, pattern, note}), switched-off built-in rules, front-end ceilings ({clientId: [scopes] | null}), planner wake-up settings, independent acceptance (verification: arbiter profiles {id, note?, commands?: exact command lines arbiters may run, verifier?: {command, args, timeoutMs} the Router runs itself, argsPattern?}, and requireForGoalDone), and agent-as-a-service (a2a: services [{name, description, enabled, callers: host ids or *, mayCall: service names, autoAllow: none | L0 | L1, reads: absolute dirs, commands: exact lines, queueMax 1..20, ttlMin 5..1440, waitSec 30..3600}] and deliveryMax 1..20).",
+    "description": "ADMIN ONLY: set who may answer each level (planner, frontend; L4 stays the owner's), owner rules ({id, level, pattern, note}), switched-off built-in rules, front-end ceilings ({clientId: [scopes] | null}), planner wake-up settings, independent acceptance (verification: arbiter profiles {id, note?, commands?: exact command lines arbiters may run, verifier?: {command, args, timeoutMs} the Router runs itself, argsPattern?}, and requireForGoalDone), and agent-as-a-service (a2a: services [{name, description, enabled, callers: host ids or *, mayCall: service names, autoAllow: none | L0 | L1, reads: absolute dirs, commands: exact lines, queueMax 1..20, ttlMin 5..1440, waitSec 30..3600}] and deliveryMax 1..20), and standing rules for helper requests (helpers: exactly one of {add: rule}, {remove: ruleId} or {auto: [rules]} to replace the whole list; a rule is {id, templateId: a template helpers may use on a machine that is not owner-only, or *, from: the host id of the machine whose local sessions ask, or *, folders: absolute folders a request may also choose itself (that folder or below; [\"*\"] any; [] the template's own folder only), note?}: a request a rule covers starts at once as yours, without waiting for psr_decide_helper; never on an owner-only machine, and at most 30 a day from one machine).",
     "scope": "admin",
     "readOnly": false,
     "inputSchema": {
@@ -1511,6 +1511,25 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 20
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "helpers": {
+          "type": "object",
+          "properties": {
+            "auto": {
+              "type": "array",
+              "maxItems": 20
+            },
+            "add": {
+              "type": "object"
+            },
+            "remove": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
             }
           },
           "required": [],
@@ -2099,7 +2118,7 @@
   },
   {
     "name": "psr_local_helpers",
-    "description": "What you may ask a helper of. A helper is a new session the Router starts for one task of yours where you cannot go yourself (another machine, another folder there), whose result comes back to you. Lists the templates (each a machine, model and permission mode, with its folder), the machines (their rules bind a helper too; anyFolder: a request may name another folder there) and your own requests with their state. It starts nothing.",
+    "description": "What you may ask a helper of. A helper is a new session the Router starts for one task of yours where you cannot go yourself (another machine, another folder there), whose result comes back to you. Lists the templates (each a machine, model and permission mode, with its folder; autoApproved: a standing rule of the owner starts your request there without waiting), the machines (their rules bind a helper too; anyFolder: a request may name another folder there) and your own requests with their state. It starts nothing.",
     "scope": "local",
     "readOnly": true,
     "inputSchema": {
@@ -2111,7 +2130,7 @@
   },
   {
     "name": "psr_local_helper_request",
-    "description": "Ask the owner for a helper. template (from psr_local_helpers): which machine, model and permission mode. cwd, optional: another absolute folder on that machine, where its anyFolder is true (never /, a top-level or a whole home directory). task: everything the helper must know, at most 8192 bytes; it knows nothing of your conversation, so say what to do, what to leave alone and what to report. purpose: one line for the owner. Nothing runs until the owner approves the request in the console, and the owner may say no. Approved, the Router starts the session and sends it the task; when it is done its result reaches you as a Router notice between your turns (or through psr_local_wait), all of it with psr_local_helper_result. Go on with other work meanwhile; do not ask twice or poll. helper (instead of template and cwd): the requestId of an earlier request of yours, to send its helper session a follow-up, which the owner approves again. Limits: 2 requests of one session undecided or running at once, 10 an hour from one machine; undecided after 24 hours, a request expires. Only for work you cannot do from here, never to split up your own task.",
+    "description": "Ask the owner for a helper. template (from psr_local_helpers): which machine, model and permission mode. cwd, optional: another absolute folder on that machine, where its anyFolder is true (never /, a top-level or a whole home directory). task: everything the helper must know, at most 8192 bytes; it knows nothing of your conversation, so say what to do, what to leave alone and what to report. purpose: one line for the owner. Nothing runs until the owner approves the request in the console, and the owner may say no; where psr_local_helpers shows autoApproved, a standing rule of the owner starts it at once and the answer says so. Approved, the Router starts the session and sends it the task; when it is done its result reaches you as a Router notice between your turns (or through psr_local_wait), all of it with psr_local_helper_result. Go on with other work meanwhile; do not ask twice or poll. helper (instead of template and cwd): the requestId of an earlier request of yours, to send its helper session a follow-up, which the owner approves again. Limits: 2 requests of one session undecided or running at once, 10 an hour from one machine; undecided after 24 hours, a request expires. Only for work you cannot do from here, never to split up your own task.",
     "scope": "local",
     "readOnly": false,
     "inputSchema": {
@@ -2171,7 +2190,7 @@
   },
   {
     "name": "psr_list_helper_requests",
-    "description": "ADMIN ONLY: the helper requests of local sessions, open ones first, then newest first: who asks (from.gone: that session has ended, so a result would stay with the task), the template (machine, model, permission mode), the folder and whether the request chose it itself (customCwd), the whole task, and where it stands. state=pending: those waiting for your decision; open: those also being started or running. pending counts those that wait.",
+    "description": "ADMIN ONLY: the helper requests of local sessions, open ones first, then newest first: who asks (from.gone: that session has ended, so a result would stay with the task), whether a standing rule started it (auto: the rule id), the template (machine, model, permission mode), the folder and whether the request chose it itself (customCwd), the whole task, and where it stands. state=pending: those waiting for your decision; open: those also being started or running. pending counts those that wait.",
     "scope": "admin",
     "readOnly": true,
     "inputSchema": {

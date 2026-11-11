@@ -1,4 +1,5 @@
 import type { WeatherPlace } from './weather.js';
+import type { HelperAutoRule } from './helper.js';
 /** 'agent' is a Paseo session reporting back over its own channel credential, never a configured entry client. */
 /** planner: the Router's own planning session (credential minted by the Router); router: turns the Router itself sends it. */
 export type EntryKind = 'grokbot' | 'dot' | 'muse' | 'cli' | 'web' | 'agent' | 'planner' | 'router' | 'local';
@@ -574,6 +575,8 @@ export interface PolicyState {
     verification: { profiles: ArbiterProfile[]; requireForGoalDone: boolean };
     /** Agent as a service (psr_ask): the services and how many undelivered answers a caller session keeps. */
     a2a: A2APolicy;
+    /** Helpers (helper.ts): the owner's standing rules, under which a covered request starts without waiting for a decision. */
+    helpers: { auto: HelperAutoRule[] };
     updatedAt: number;
     by: string;
 }
