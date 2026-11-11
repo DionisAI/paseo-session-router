@@ -1439,12 +1439,19 @@ export function createPark(root, api) {
             if (why) why.onkeydown = e => { if (e.key === 'Enter') e.preventDefault(); }; // Enter in the reason must not approve
         });
         el.querySelectorAll('form.helper-rule-new').forEach(f => f.onsubmit = e => { e.preventDefault(); const hp = helperRules(); if (!hp) return;
-            const scope = f.scope.value, folders = scope === 'any' ? ['*'] : scope === 'list' ? f.folders.value.split('\n').map(x => x.trim()).filter(Boolean) : [], note = f.note.value.trim();
+            // what a person types: a trailing slash is dropped; anything that is no absolute path is said here, in words
+            const scope = f.scope.value, typed = f.folders.value.split('\n').map(x => x.trim()).filter(Boolean).map(x => x.length > 1 ? x.replace(/\/+$/, '') || '/' : x);
+            const folders = scope === 'any' ? ['*'] : scope === 'list' ? [...new Set(typed)] : [], note = f.note.value.trim();
             if (scope === 'list' && !folders.length) return api.toast('列出至少一個資料夾，或改選別的選項', true);
+            const wrong = scope === 'list' ? folders.find(x => !x.startsWith('/') || x === '/' || x.slice(1).split('/').some(part => part === '' || part === '.' || part === '..')) : null;
+            if (wrong) return api.toast(`「${wrong}」不能用：要寫那台機器上的絕對路徑，以 / 開頭（不能用 ~、不能是 / 本身、不能有 .. ）`, true);
+            if (folders.length > 10) return api.toast('一條規則最多 10 個資料夾', true);
             const rule = { id: `r${Date.now().toString(36)}`, templateId: f.template.value, from: f.from.value, folders, ...(note ? { note } : {}) };
             run(f.querySelector('[type=submit]'), async () => { const r = await api.act('psr_set_policy', { helpers: { add: rule } }); delete f.dataset.dirty; return r; }, () => '已新增：符合的請求之後不用等你'); });
+        el.querySelectorAll('form.helper-rule-new').forEach(f => { f.folders.oninput = () => { if (f.folders.value.trim() && f.scope.value === 'template') f.scope.value = 'list'; }; });
         el.querySelectorAll('form[data-helper-rule-remove]').forEach(f => twoStep(f, b => run(b, () => api.act('psr_set_policy', { helpers: { remove: f.dataset.helperRuleRemove } }), () => '已移除：這類請求之後又會等你')));
         el.querySelectorAll('[data-goto-helpers]').forEach(b => b.onclick = () => select({ kind: 'helpers', id: 'all' }));
+        el.querySelectorAll('[data-goto-helper-rules]').forEach(b => b.onclick = () => el.querySelector('.helper-rules')?.scrollIntoView({ block: 'start', behavior: 'smooth' }));
         el.querySelectorAll('[data-goto-task]').forEach(b => b.onclick = () => select({ kind: 'task', id: b.dataset.gotoTask }));
         el.querySelectorAll('[data-goto-resources]').forEach(b => b.onclick = () => select({ kind: 'resources', id: 'all' }));
         el.querySelectorAll('[data-goto-transfers]').forEach(b => b.onclick = () => select({ kind: 'transfers', id: 'all' }));
@@ -1587,19 +1594,20 @@ export function createPark(root, api) {
         const row = r => `<form class="tpl-row" data-helper-rule-remove="${esc(r.id)}" data-armed-text="再按一次移除"><p><b>${esc(tpl(r.templateId))}</b><small>${r.from === '*' ? '任何機器的 session 提出' : `${esc(hostLabel(r.from))} 的 session 提出`}</small></p>
           <small>${esc(ruleFolders(r))}</small><small>${r.note ? `${esc(r.note)} · ` : ''}${esc(clientName(r.by))} ${esc(relTime(r.at))}設定</small><div class="inspector-actions"><button type="submit" class="park-btn ghost">移除</button></div></form>`;
         const askers = state.data.hosts.hosts.filter(h => !h.ownerApprovalOnly), locked = state.data.hosts.hosts.filter(h => h.ownerApprovalOnly).map(h => h.label);
-        return `<h3>自動批准 · ${hp.auto.length} 條規則</h3>${hp.auto.length ? hp.auto.map(row).join('') : '<p class="muted">沒有規則：每個請求都等你。</p>'}
-          <details class="task-more" data-open-key="helper-rule:new"><summary>新增自動批准規則</summary>
-            <form class="res-edit helper-rule-new"><label>哪個模板<select name="template"><option value="*">所有模板</option>${hp.templates.map(t => `<option value="${esc(t.id)}">${esc(t.title)} · ${esc(hostLabel(t.hostId))} · ${esc(modeWords(t))}</option>`).join('')}</select></label>
+        // with no rule yet the form is simply there (nothing to find); with rules it folds away under them
+        const form = `<form class="res-edit helper-rule-new"><label>哪個模板<select name="template"><option value="*">所有模板</option>${hp.templates.map(t => `<option value="${esc(t.id)}">${esc(t.title)} · ${esc(hostLabel(t.hostId))} · ${esc(modeWords(t))}</option>`).join('')}</select></label>
               <label>哪台機器上的 session 提出的<select name="from"><option value="*">任何機器</option>${askers.map(h => `<option value="${esc(h.id)}">${esc(h.label)}</option>`).join('')}</select></label>
               <label>請求自己指定資料夾時<select name="scope"><option value="template">不自動（只有模板自己的資料夾自動）</option><option value="list">下面列的資料夾和它們底下的也自動</option><option value="any">任意資料夾都自動</option></select></label>
               <label>資料夾，每行一個絕對路徑<textarea name="folders" rows="2" placeholder="/data"></textarea></label>
               <label>備註<input name="note" maxlength="60" placeholder="可不填，會顯示在自動批准的請求上"></label>
               <div class="inspector-actions"><button type="submit" class="park-btn primary">新增規則</button></div></form>
-            <p class="inspector-hint">符合規則的請求不用等你：Router 直接建 session，以你的名義派任務，卡片上會標「自動批准」。每台機器 24 小時內最多自動啟動 ${hp.perDay} 個，超過的照舊等你。${locked.length ? `只有你能批的機器（${esc(locked.join('、'))}）永遠不自動。` : ''}已經在等的請求不會被追溯：手動批准，或讓提出的 session 再提一次。</p></details>`;
+            <p class="inspector-hint">符合規則的請求不用等你：Router 直接建 session，以你的名義派任務，卡片上會標「自動批准」。每台機器 24 小時內最多自動啟動 ${hp.perDay} 個，超過的照舊等你。${locked.length ? `只有你能批的機器（${esc(locked.join('、'))}）永遠不自動。` : ''}已經在等的請求不會被追溯：手動批准，或讓提出的 session 再提一次。</p>`;
+        return `<h3 class="helper-rules">自動批准 · ${hp.auto.length} 條規則</h3>${hp.auto.length ? `${hp.auto.map(row).join('')}<details class="task-more" data-open-key="helper-rule:new"><summary>新增自動批准規則</summary>${form}</details>`
+            : `<p class="muted">還沒有規則：每個請求都等你。要讓某一類請求不用等，在這裡加一條：</p>${form}`}`;
     }
     function helpersPanel() {
         const hs = state.data.helpers, all = hs?.requests ?? [], pending = all.filter(r => r.state === 'pending'), open = all.filter(r => r.state === 'starting' || r.state === 'running'), rest = all.filter(r => !['pending', 'starting', 'running'].includes(r.state)).slice(0, 20);
-        return `<p class="eyebrow">本機 session</p><h2>幫手</h2><p class="inspector-text">本機 session 要到別台機器、或別的資料夾做事時，在這裡請求一個幫手：Router 新建的 session，只做那一個任務，結果回到提出請求的 session。除了符合下面「自動批准」規則的，你批准之前什麼都不會開始；24 小時沒決定就過期。</p>
+        return `<p class="eyebrow">本機 session</p><h2>幫手</h2><p class="inspector-text">本機 session 要到別台機器、或別的資料夾做事時，在這裡請求一個幫手：Router 新建的 session，只做那一個任務，結果回到提出請求的 session。除了符合下面${canEdit() && helperRules() ? '<button type="button" class="link" data-goto-helper-rules>「自動批准」規則</button>' : '「自動批准」規則'}的，你批准之前什麼都不會開始；24 小時沒決定就過期。</p>
           ${!hs ? '<p class="muted">讀不到幫手請求（只有你看得到）。</p>' : `<h3>等你批准 · ${pending.length}</h3>${pending.length ? pending.map(r => helperRow(r)).join('') : '<p class="muted">沒有。</p>'}
           ${helperRulesBlock()}
           ${open.length ? `<h3>進行中 · ${open.length}</h3>${open.map(r => helperRow(r)).join('')}` : ''}

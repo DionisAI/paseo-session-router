@@ -768,3 +768,7 @@ button.ask-row { cursor: pointer; } button.ask-row:hover { background: var(--pap
 .helper-rule-new select, .helper-rule-new textarea { font: inherit; font-size: 13px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 6px 9px; min-width: 0; }
 .helper-rule-new textarea { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 12px; resize: vertical; }
 .helper-row .helper-auto { color: oklch(48% 0.13 150); font-weight: 650; }
+/* the page headers' buttons (資源, 幫手, 訊息, 檢查登入, 檔案) open panels: they look like buttons, not like underlined text */
+.pg-head .park-btn.ghost { background: var(--paper-2); color: var(--ink); text-decoration: none; box-shadow: 0 0 0 2px var(--outline), inset 0 -2px 0 rgb(90 44 13 / .25); padding: 5px 10px; font-size: 12.5px; }
+.pg-head .park-btn.ghost:hover:not(:disabled) { background: #ffe9b5; }
+.pg-head .park-btn.ghost.is-alert { color: oklch(45% 0.16 55); }
