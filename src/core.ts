@@ -2,7 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { TaskState, TaskStep, VerifySpec, Verification, ArbiterProfile, SeatRole, Ask, Service, ForumPost, ForumAuthor, ProviderLogin } from './types.js';
 import type { Adapter, RouterConfig, Principal, Session, NativeSession, NativeEvent, DaemonConfig, DaemonObservation, Worker, Binding, RoutePayload, Task, Artifact, FrontierWorkspace, FrontierCard, TopologyNode, TopologyEdge, DispatchMode, Mapping, AgentChannel, AgentMessage, Annotation, HostConfig, SessionTemplate, PermissionRequest, Goal, GoalMessage, PlannerEvent, PolicyState } from './types.js';
-import { LEVELS, LEVEL_INFO, APPROVERS, DEFAULT_APPROVERS, BUILTIN_RULES, classifyRequest, checkRules, type Level } from './policy.js';
+import { LEVELS, LEVEL_INFO, APPROVERS, DEFAULT_APPROVERS, BUILTIN_RULES, classifyRequest, checkRules, rank, type Level } from './policy.js';
+import { AUTO_OFF, AUTO_DANGER_PER_TASK, autoActive, autoDecision, autoRule, checkAutoApprove, cutShort, touchesSecret } from './auto-approve.js';
 import { FRONTEND_SCOPES, FRONTEND_KINDS, PLANNER_SCOPES, PLANNER_DISALLOWED_TOOLS, PLANNER_SYSTEM_PROMPT, PLANNER_TOOLSET_VERSION, FORUM_SINCE_TOOLSET, plannerOffers, plannerPrincipal, routerPrincipal, plannerFeedPrompt } from './planner.js';
 import { TOOLS } from './tools.js';
 import { ACTIVE, TERMINAL } from './types.js';
@@ -46,6 +47,8 @@ type SubmitExtension = {
     includeSourceResult?: boolean;
     system?: Task['system'];
     retryOf?: string;
+    helperOf?: string;
+    relayed?: Task['relayed'];
     /** The Router's own turn on one of its seats (an arbiter checking verifyOf, a service answering askOf); only these may target a seat. */
     routerTurn?: Task['routerTurn'];
     verifyOf?: string;
@@ -362,9 +365,12 @@ export class Router extends EventEmitter {
             try { requests = await deadline(a.permissions(s.nativeId), 6000, 'Permission lookup'); }
             catch { continue; }
             const ask = task?.askOf ? this.store.get<Ask>('ask', task.askOf) : undefined;
+            // under the owner's auto-approval: why a request still waits (next: the Router allows it on its next tick)
+            const auto = task ? this.autoFor(task.id) : null;
             for (const r of requests) {
                 const c = classifyRequest(r, s.cwd, pol), reason = this.approvalAuthority(p, s, task, c.level, pol);
-                permissions.push({ routerTurn: task?.routerTurn ?? null, ...(ask ? { ask: { id: ask.id, service: ask.service, path: ask.path, callerSession: ask.callerSession } } : {}), sessionRef: s.id, sessionName: this.annotation('session', s.id)?.displayName ?? s.title, hostId: s.hostId, taskId: task?.id ?? null, goalId: task?.missionId && this.store.get<Goal>('goal', task.missionId) ? task.missionId : null, assignedBy: task?.originClientId ?? null, requestId: r.id, tool: r.tool, title: r.title, description: r.description, detail: r.detail, level: c.level, levelName: LEVEL_INFO[c.level].name, rule: c.ruleId, why: c.reason, approvers: c.level === 'L4' ? [] : pol.approvers[c.level], ownerOnly: !!host?.humanApproval || c.level === 'L4', canRespond: reason === null, reason, plannerSession: s.id === pol.planner.sessionRef });
+                const autoWhy = auto ? autoDecision(c, auto.auto, auto.trusted, { truncated: cutShort(r.detail), secret: touchesSecret(c, r.detail), dangerUsed: auto.t.autoDanger ?? 0 }) ?? 'next' as const : null;
+                permissions.push({ routerTurn: task?.routerTurn ?? null, ...(ask ? { ask: { id: ask.id, service: ask.service, path: ask.path, callerSession: ask.callerSession } } : {}), sessionRef: s.id, sessionName: this.annotation('session', s.id)?.displayName ?? s.title, hostId: s.hostId, taskId: task?.id ?? null, goalId: task?.missionId && this.store.get<Goal>('goal', task.missionId) ? task.missionId : null, assignedBy: task?.originClientId ?? null, requestId: r.id, tool: r.tool, title: r.title, description: r.description, detail: r.detail, level: c.level, levelName: LEVEL_INFO[c.level].name, rule: c.ruleId, why: c.reason, approvers: c.level === 'L4' ? [] : pol.approvers[c.level], ownerOnly: !!host?.humanApproval || c.level === 'L4', canRespond: reason === null, reason, plannerSession: s.id === pol.planner.sessionRef, autoWhy });
             }
         }
         return { permissions };
@@ -391,7 +397,7 @@ export class Router extends EventEmitter {
     private policy(): PolicyState {
         const stored = this.store.get<PolicyState>('policy', 'main');
         return { approvers: { ...DEFAULT_APPROVERS, ...stored?.approvers, L4: [] }, rules: stored?.rules ?? [], disabled: stored?.disabled ?? [], ceilings: stored?.ceilings ?? {}, grants: stored?.grants ?? {},
-            planner: { sessionRef: null, creation: null, templateId: null, enabled: false, batchMs: 60000, maxTurnsPerHour: 20, lastFeedAt: 0, fedUpTo: 0, ...stored?.planner }, approvalTimeoutMs: stored?.approvalTimeoutMs ?? 2 * 3600000, verification: { profiles: stored?.verification?.profiles ?? [], requireForGoalDone: stored?.verification?.requireForGoalDone ?? false }, a2a: { services: stored?.a2a?.services ?? DEFAULT_A2A.services, deliveryMax: stored?.a2a?.deliveryMax ?? DEFAULT_A2A.deliveryMax }, helpers: { auto: stored?.helpers?.auto ?? [] }, updatedAt: stored?.updatedAt ?? 0, by: stored?.by ?? 'default' };
+            planner: { sessionRef: null, creation: null, templateId: null, enabled: false, batchMs: 60000, maxTurnsPerHour: 20, lastFeedAt: 0, fedUpTo: 0, ...stored?.planner }, approvalTimeoutMs: stored?.approvalTimeoutMs ?? 2 * 3600000, verification: { profiles: stored?.verification?.profiles ?? [], requireForGoalDone: stored?.verification?.requireForGoalDone ?? false }, a2a: { services: stored?.a2a?.services ?? DEFAULT_A2A.services, deliveryMax: stored?.a2a?.deliveryMax ?? DEFAULT_A2A.deliveryMax }, helpers: { auto: stored?.helpers?.auto ?? [] }, autoApprove: { ...AUTO_OFF, ...stored?.autoApprove }, updatedAt: stored?.updatedAt ?? 0, by: stored?.by ?? 'default' };
     }
     private savePolicy(next: PolicyState, by: string) { this.store.put('policy', 'main', { ...next, updatedAt: this.now(), by }, null, null, this.now()); this.changed(); }
     /** A front-end's scopes: the owner's ceiling (once set in the console) narrowed by what the planner granted. Other entries,
@@ -419,13 +425,16 @@ export class Router extends EventEmitter {
             a2a: { ...pol.a2a, ...this.a2aState(pol) },
             // standing rules for helpers, and the templates a rule may name (none on an owner-only machine)
             helpers: { auto: pol.helpers.auto, perDay: HELPER_AUTO_PER_DAY, templates: this.helperTemplates().filter(t => !this.ownerOnlyHost(this.daemon(t.daemonId).hostId)).map(t => { const x = this.presentTemplate(t); return { id: x.id, title: x.title, hostId: x.hostId, provider: x.provider, modeId: x.modeId, folder: x.cwd }; }) },
+            // auto-approval: the setting, whether it is in force now, and the sources it may trust
+            autoApprove: { ...pol.autoApprove, active: autoActive(pol.autoApprove, this.now()), perTask: AUTO_DANGER_PER_TASK, sourceChoices: this.autoSources() },
             updatedAt: pol.updatedAt || null, by: pol.by,
         };
     }
     /** Owner edits from the console. L4 stays owner-only whatever is sent; a ceiling change trims the planner's grant to it. */
-    setPolicy(p: Principal, input: { approvers?: Record<string, unknown>; rules?: unknown; disabled?: unknown; ceilings?: Record<string, unknown>; planner?: { enabled?: boolean; batchMs?: number; maxTurnsPerHour?: number }; approvalTimeoutMs?: number; verification?: { profiles?: unknown; requireForGoalDone?: boolean }; a2a?: unknown; helpers?: { auto?: unknown; add?: unknown; remove?: unknown } }) {
+    setPolicy(p: Principal, input: { approvers?: Record<string, unknown>; rules?: unknown; disabled?: unknown; ceilings?: Record<string, unknown>; planner?: { enabled?: boolean; batchMs?: number; maxTurnsPerHour?: number }; approvalTimeoutMs?: number; verification?: { profiles?: unknown; requireForGoalDone?: boolean }; a2a?: unknown; helpers?: { auto?: unknown; add?: unknown; remove?: unknown }; autoApprove?: unknown }) {
         requireScope(p, 'admin');
         const pol = this.policy();
+        if (input.autoApprove !== undefined) pol.autoApprove = checkAutoApprove(input.autoApprove, pol.autoApprove, this.autoSources().map(x => x.id), this.now());
         if (input.helpers !== undefined) {
             // one change at a time: add or remove one rule on the list as it is now (two consoles with different snapshots then
             // cannot bring back a rule the other removed), or replace the whole list
@@ -855,7 +864,7 @@ export class Router extends EventEmitter {
             if (policy === 'reject')
                 assert(!busy, 'BUSY', 'Target or mutation domain is busy', 409);
             const taskId = id('task');
-            const t: Task = { id: taskId, state: 'queued', target: s.id, projectId: s.projectId, hostId: s.hostId, daemonId: s.daemonId, domainId: s.domainId!, targetFingerprint: sessionFingerprint(s), workerId: s.workerId, workstreamId: ticket.workstreamId ?? replyTo?.workstreamId ?? null, originClientId: p.clientId, originKind: p.entryKind, principalId: p.principalId, prompt: input.prompt, idempotencyKey: input.idempotencyKey, payloadHash, marker: `[PSR-TASK:${taskId}:${randomBytes(16).toString('hex')}]`, createdAt: this.now(), updatedAt: this.now(), version: 1, turnId: null, dispatchCursor: null, observationPrepared: false, lastCursor: null, attempt: 0, blocker: null, resultSummary: null, verification: { status: 'not_run' }, notificationState: 'not_configured', lockHeld: false, dependencyId: dependency?.id ?? null, rootTaskId: dependency?.rootTaskId ?? taskId, depth: dependency ? dependency.depth + 1 : 0, artifacts: extension?.artifacts ?? [], completionEvidence: null, queueDeadline: input.queueTimeoutMs !== undefined ? this.now() + input.queueTimeoutMs : null, replyToTaskId: replyTo?.id ?? null, includeSourceResult, missionId, missionTitle, missionPart, ...(extension?.system ? { system: extension.system } : {}), ...(extension?.retryOf ? { retryOf: extension.retryOf } : {}), ...(verify ? { verify } : {}), ...(extension?.routerTurn ? { routerTurn: extension.routerTurn, verifyOf: extension.verifyOf ?? null, nonce: extension.nonce ?? null, ...(extension.askOf ? { askOf: extension.askOf } : {}) } : {}) };
+            const t: Task = { id: taskId, state: 'queued', target: s.id, projectId: s.projectId, hostId: s.hostId, daemonId: s.daemonId, domainId: s.domainId!, targetFingerprint: sessionFingerprint(s), workerId: s.workerId, workstreamId: ticket.workstreamId ?? replyTo?.workstreamId ?? null, originClientId: p.clientId, originKind: p.entryKind, principalId: p.principalId, prompt: input.prompt, idempotencyKey: input.idempotencyKey, payloadHash, marker: `[PSR-TASK:${taskId}:${randomBytes(16).toString('hex')}]`, createdAt: this.now(), updatedAt: this.now(), version: 1, turnId: null, dispatchCursor: null, observationPrepared: false, lastCursor: null, attempt: 0, blocker: null, resultSummary: null, verification: { status: 'not_run' }, notificationState: 'not_configured', lockHeld: false, dependencyId: dependency?.id ?? null, rootTaskId: dependency?.rootTaskId ?? taskId, depth: dependency ? dependency.depth + 1 : 0, artifacts: extension?.artifacts ?? [], completionEvidence: null, queueDeadline: input.queueTimeoutMs !== undefined ? this.now() + input.queueTimeoutMs : null, replyToTaskId: replyTo?.id ?? null, includeSourceResult, missionId, missionTitle, missionPart, ...(extension?.system ? { system: extension.system } : {}), ...(extension?.retryOf ? { retryOf: extension.retryOf } : {}), ...(extension?.helperOf ? { helperOf: extension.helperOf } : {}), ...(extension?.relayed ? { relayed: extension.relayed } : {}), ...(verify ? { verify } : {}), ...(extension?.routerTurn ? { routerTurn: extension.routerTurn, verifyOf: extension.verifyOf ?? null, nonce: extension.nonce ?? null, ...(extension.askOf ? { askOf: extension.askOf } : {}) } : {}) };
             const result = this.store.putTask(t);
             this.store.put('idempotency', idemId, { payloadHash, taskId: t.id, validUntil: ticket.exp }, t.projectId, t.hostId, this.now());
             this.changed();
@@ -1155,6 +1164,72 @@ export class Router extends EventEmitter {
             }
         }
     }
+    // ---------- auto-approval (auto-approve.ts): the owner's standing answer to permission requests ----------
+    /** The sources a setting may trust: every client that sends work (the planner is not one: a task it sends counts as its
+     * goal's), and every machine whose local sessions may ask for helpers (an owner-only machine gets no local credential). */
+    private autoSources() {
+        return [...this.config.clients.filter(c => !c.disabled).map(c => ({ id: `client:${c.clientId}`, kind: 'client' as const, clientId: c.clientId, entryKind: c.entryKind, frontend: FRONTEND_KINDS.has(c.entryKind) })),
+            ...this.config.hosts.filter(h => !h.humanApproval).map(h => ({ id: `helper:${h.id}`, kind: 'helper' as const, hostId: h.id, label: this.presentHost(h).label }))];
+    }
+    /** Where a task's instruction came from, as a setting names it: the machine whose local session asked for the helper that
+     * runs it (never who approved its start), while that machine's credential stands; else the client that sent it, while that
+     * client stands. null, nobody a setting can trust: a task the planner sent (it reads every client's goals and every
+     * session's results, so what it writes is no single client's word), a turn the Router wrote in a client's name around
+     * another agent's words (relayed), an agent's own task, a client that is disabled or revoked. What a task is was recorded
+     * when it was sent and goes with it when it is sent again, so this never depends on another task still being kept. */
+    private taskSource(t: Task): string | null {
+        if (t.relayed || t.originKind === 'planner') return null;
+        if (t.helperOf) {
+            const r = this.store.get<HelperRequest>('helper_request', t.helperOf), c = r ? this.store.get<LocalCredential>('local_credential', r.credentialId) : undefined;
+            return r && c && !c.revoked && c.exp > this.now() ? `helper:${r.fromHostId}` : null;
+        }
+        return this.principalOf(t.originClientId) ? `client:${t.originClientId}` : null;
+    }
+    /** Whether auto-approval is for this task at all: ordinary work, not a turn the Router sends itself (those have their own
+     * rules), not the planner's own session, and never on an owner-only machine. And only while what the session asks is this
+     * task's to ask: the task is at work (not being canceled, not one whose delivery is unknown) and the session's active
+     * turn, where the daemon reports one, is the task's own (not something typed into the session directly). */
+    private autoCovers(t: Task, s: Session, pol: PolicyState) {
+        return !t.routerTurn && !t.system && s.id !== pol.planner.sessionRef && !this.ownerOnlyHost(s.hostId)
+            && (t.state === 'running' || t.state === 'waiting_permission') && !!t.turnId && (!s.activeTurnId || s.activeTurnId === t.turnId);
+    }
+    /** How auto-approval stands for one task, from the store as it is this moment; null: it is not for this task (or is off).
+     * trusted: the task's source is one the owner ticked and the Router still offers (a machine that left the configuration
+     * or became owner-only, a client that was removed: such a source trusts nobody). any: some request of it could be allowed. */
+    private autoFor(taskId: string) {
+        const pol = this.policy(), auto = pol.autoApprove, t = this.store.task(taskId);
+        if (!t || !autoActive(auto, this.now())) return null;
+        const s = this.store.get<Session>('session', t.target);
+        if (!s?.present || !this.autoCovers(t, s, pol)) return null;
+        const source = this.taskSource(t), trusted = source !== null && auto.sources.includes(source) && this.autoSources().some(x => x.id === source);
+        return { pol, auto, t, s, source, trusted, any: !!(auto.all || (trusted && auto.trusted)) };
+    }
+    /** On each tick: the requests the setting covers are allowed here, in code, and kept on the task; everything else stays for
+     * whoever answers it today. Never a deny. A task none of whose requests could be covered costs its daemon nothing. The
+     * setting, the task and its source are read again right before each answer, since asking a daemon takes time: switched
+     * off, expired, the task over or its source no longer trusted meanwhile, and nothing more is allowed. */
+    private async autoApprove() {
+        if (!autoActive(this.policy().autoApprove, this.now())) return;
+        for (const { id } of this.store.tasks().filter(t => ACTIVE.has(t.state))) {
+            const first = this.autoFor(id);
+            if (!first?.any || !(first.s.pendingPermissions > 0 || first.t.state === 'waiting_permission')) continue;
+            const { s } = first, ad = this.adapters.get(s.daemonId);
+            if (!ad?.permissions || !ad.respondPermission || this.store.get<DaemonObservation>('daemon', s.daemonId)?.connection !== 'online') continue;
+            let requests: PermissionRequest[];
+            try { requests = await deadline(ad.permissions(s.nativeId), 6000, 'Permission lookup'); }
+            catch { continue; }
+            for (const r of requests) {
+                const now = this.autoFor(id);
+                if (!now?.any) break;
+                const c = classifyRequest(r, now.s.cwd, now.pol);
+                if (autoDecision(c, now.auto, now.trusted, { truncated: cutShort(r.detail), secret: touchesSecret(c, r.detail), dangerUsed: now.t.autoDanger ?? 0 })) continue;
+                try { await deadline(ad.respondPermission(s.nativeId, r.id, true), 10000, 'Permission answer'); }
+                catch { continue; }
+                const cur = this.store.task(id)!;
+                this.updateTask(cur, { approvals: [...(cur.approvals ?? []), { requestId: r.id, decision: 'allow' as const, by: 'router', at: this.now(), tool: r.tool, detail: r.detail, level: c.level, rule: autoRule(c.level, now.auto, now.source) }].slice(-20), ...(rank(c.level) >= rank('L3') ? { autoDanger: (cur.autoDanger ?? 0) + 1 } : {}) });
+            }
+        }
+    }
     // ---------- agent as a service: psr_ask, the service queues, Router turns on service seats, and delivery ----------
     /** Synchronous calls waiting for an answer, by ask id. In memory only: after a restart every answer goes to the queue. A
      * hold resolved with null was abandoned (the caller canceled the call or its turn is over): its answer goes to the queue. */
@@ -1411,7 +1486,7 @@ export class Router extends EventEmitter {
             try {
                 const route = this.resolve(p, { sessionRef: ref });
                 if (route.status !== 'resolved') continue;
-                const reply = this.submit(p, { routeTicket: route.routeTicket!, prompt: askReplyPrompt(group), idempotencyKey: `ask-reply-${hash(group.map(a => a.id).join(',')).slice(0, 32)}`, busyPolicy: 'queue' }, { replyTo });
+                const reply = this.submit(p, { routeTicket: route.routeTicket!, prompt: askReplyPrompt(group), idempotencyKey: `ask-reply-${hash(group.map(a => a.id).join(',')).slice(0, 32)}`, busyPolicy: 'queue' }, { replyTo, relayed: 'ask_reply' });
                 this.store.tx(() => { for (const a of group) this.putAsk(a, { delivery: 'delivered', deliveredAt: this.now(), deliveredTaskId: reply.id }); });
             }
             catch { /* the session went stale or the client lost submit: the next tick tries again until the TTL */ }
@@ -1493,7 +1568,8 @@ export class Router extends EventEmitter {
                 const route = this.resolve(p, { sessionRef: t.target });
                 if (route.status !== 'resolved') continue;
                 const dependency = t.dependencyId ? this.store.task(t.dependencyId) : undefined, replyTo = t.replyToTaskId ? this.store.task(t.replyToTaskId) : undefined;
-                this.submit(p, { routeTicket: route.routeTicket!, prompt: t.prompt, idempotencyKey: `${t.idempotencyKey.slice(0, 150)}:retry`, busyPolicy: 'queue', ...(t.missionId ? { missionId: t.missionId } : {}), ...(t.missionPart ? { missionPart: t.missionPart } : {}), ...(t.verify ? { verify: t.verify } : {}) }, { dependency, replyTo, includeSourceResult: t.includeSourceResult, artifacts: t.artifacts, retryOf: t.id });
+                const again = this.submit(p, { routeTicket: route.routeTicket!, prompt: t.prompt, idempotencyKey: `${t.idempotencyKey.slice(0, 150)}:retry`, busyPolicy: 'queue', ...(t.missionId ? { missionId: t.missionId } : {}), ...(t.missionPart ? { missionPart: t.missionPart } : {}), ...(t.verify ? { verify: t.verify } : {}) }, { dependency, replyTo, includeSourceResult: t.includeSourceResult, artifacts: t.artifacts, retryOf: t.id, ...(t.helperOf ? { helperOf: t.helperOf } : {}), ...(t.relayed ? { relayed: t.relayed } : {}) });
+                if (t.autoDanger) this.updateTask(again, { autoDanger: t.autoDanger }); // the same work, the same share of dangerous requests
             }
             catch { /* the session went away, is stale or the client lost submit: no retry */ }
         }
@@ -2306,7 +2382,7 @@ export class Router extends EventEmitter {
             const route = this.resolve(p, { sessionRef: cur.sessionRef! });
             assert(route.status === 'resolved', 'HELPER_GONE', `The helper session cannot take work: ${route.reason}`, 409);
             const first = (cur.purpose ?? cur.task.split('\n')[0].trim()).slice(0, 110);
-            const task = this.submit(p, { routeTicket: route.routeTicket!, prompt: helperPrompt(cur), idempotencyKey: `helper-task-${cur.id}`, missionId: `helper-${cur.root ?? cur.id}`, ...(cur.root ? {} : { missionTitle: `幫手：${first}` }) });
+            const task = this.submit(p, { routeTicket: route.routeTicket!, prompt: helperPrompt(cur), idempotencyKey: `helper-task-${cur.id}`, missionId: `helper-${cur.root ?? cur.id}`, ...(cur.root ? {} : { missionTitle: `幫手：${first}` }) }, { helperOf: cur.id });
             cur = this.putHelper(cur, { state: 'running', taskId: task.id });
         } catch (e) {
             const again = e instanceof Fault && ['HOST_OFFLINE', 'CAPACITY_EXCEEDED', 'CAPABILITY_UNAVAILABLE', 'STALE_TARGET'].includes(e.code);
@@ -2535,7 +2611,7 @@ export class Router extends EventEmitter {
             try {
                 const route = this.resolve(p, { sessionRef: s.id });
                 if (route.status !== 'resolved') continue;
-                const t = this.submit(p, { routeTicket: route.routeTicket!, prompt, idempotencyKey: `resource-claim-${c.seq}-${kind}`, busyPolicy: 'queue' }, source ? { replyTo: source } : undefined);
+                const t = this.submit(p, { routeTicket: route.routeTicket!, prompt, idempotencyKey: `resource-claim-${c.seq}-${kind}`, busyPolicy: 'queue' }, { ...(source ? { replyTo: source } : {}), relayed: 'resource' });
                 this.store.put('resource_claim', c.id, { ...c, pendingTurn: null, pendingSince: null, turnTaskIds: [...(c.turnTaskIds ?? []), t.id] }, null, null, now);
                 this.changed();
             }
@@ -3019,7 +3095,7 @@ export class Router extends EventEmitter {
     async tick() { if (this.closed)
         return; if (this.ticking)
         return this.ticking; this.ticking = (async () => { await this.syncDirectory(); for (const t of this.store.tasks().filter(t => ACTIVE.has(t.state)))
-        await this.recover(t); await this.autoAnswer(); await this.routerTurnCaps(); await this.settleTurns(); await this.autoRelease(); this.expireQueued(); this.verifyTick(); await this.askTick(); this.resourceTurns(); this.helperTick(); await Promise.all(this.store.tasks().filter(t => t.state === 'queued').map(t => this.dispatch(t))); await this.autoRelease(); await this.expireApprovals(); this.retryTransient(); this.watchForPlanner(); await this.feedPlanner(); this.gc(); this.changed(); })().finally(() => { this.ticking = null; }); return this.ticking; }
+        await this.recover(t); await this.autoAnswer(); await this.autoApprove(); await this.routerTurnCaps(); await this.settleTurns(); await this.autoRelease(); this.expireQueued(); this.verifyTick(); await this.askTick(); this.resourceTurns(); this.helperTick(); await Promise.all(this.store.tasks().filter(t => t.state === 'queued').map(t => this.dispatch(t))); await this.autoRelease(); await this.expireApprovals(); this.retryTransient(); this.watchForPlanner(); await this.feedPlanner(); this.gc(); this.changed(); })().finally(() => { this.ticking = null; }); return this.ticking; }
     private forumGcAt = 0;
     gc() { const now = this.now(); this.store.tx(() => { const tasks = this.store.tasks(); const protectedIds = new Set<string>(); const preserve = (t: Task) => { if (protectedIds.has(t.id))
         return; protectedIds.add(t.id); if (t.dependencyId) {

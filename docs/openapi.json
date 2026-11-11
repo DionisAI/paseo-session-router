@@ -1830,7 +1830,7 @@
     "/v1/tools/psr_list_permissions": {
       "post": {
         "operationId": "psr_list_permissions",
-        "summary": "Permission requests sessions are waiting on (task state waiting_permission): the exact command or tool input, who assigned the turn, and whether you may answer it (canRespond, reason). Hosts marked ownerOnly accept answers only from the owner.",
+        "summary": "Permission requests sessions are waiting on (task state waiting_permission): the exact command or tool input, who assigned the turn, and whether you may answer it (canRespond, reason). autoWhy, while the owner's auto-approval is in force: why the Router has not allowed it by itself (source, level, truncated, secret, cap), or next when it will on its next tick. Hosts marked ownerOnly accept answers only from the owner.",
         "security": [
           {
             "bearerAuth": []
@@ -2574,7 +2574,7 @@
     "/v1/tools/psr_set_policy": {
       "post": {
         "operationId": "psr_set_policy",
-        "summary": "ADMIN ONLY: set who may answer each level (planner, frontend; L4 stays the owner's), owner rules ({id, level, pattern, note}), switched-off built-in rules, front-end ceilings ({clientId: [scopes] | null}), planner wake-up settings, independent acceptance (verification: arbiter profiles {id, note?, commands?: exact command lines arbiters may run, verifier?: {command, args, timeoutMs} the Router runs itself, argsPattern?}, and requireForGoalDone), and agent-as-a-service (a2a: services [{name, description, enabled, callers: host ids or *, mayCall: service names, autoAllow: none | L0 | L1, reads: absolute dirs, commands: exact lines, queueMax 1..20, ttlMin 5..1440, waitSec 30..3600}] and deliveryMax 1..20), and standing rules for helper requests (helpers: exactly one of {add: rule}, {remove: ruleId} or {auto: [rules]} to replace the whole list; a rule is {id, templateId: a template helpers may use on a machine that is not owner-only, or *, from: the host id of the machine whose local sessions ask, or *, folders: absolute folders a request may also choose itself (that folder or below; [\"*\"] any; [] the template's own folder only), note?}: a request a rule covers starts at once as yours, without waiting for psr_decide_helper; never on an owner-only machine, and at most 30 a day from one machine).",
+        "summary": "ADMIN ONLY: set who may answer each level (planner, frontend; L4 stays the owner's), owner rules ({id, level, pattern, note}), switched-off built-in rules, front-end ceilings ({clientId: [scopes] | null}), planner wake-up settings, independent acceptance (verification: arbiter profiles {id, note?, commands?: exact command lines arbiters may run, verifier?: {command, args, timeoutMs} the Router runs itself, argsPattern?}, and requireForGoalDone), and agent-as-a-service (a2a: services [{name, description, enabled, callers: host ids or *, mayCall: service names, autoAllow: none | L0 | L1, reads: absolute dirs, commands: exact lines, queueMax 1..20, ttlMin 5..1440, waitSec 30..3600}] and deliveryMax 1..20), and standing rules for helper requests (helpers: exactly one of {add: rule}, {remove: ruleId} or {auto: [rules]} to replace the whole list; a rule is {id, templateId: a template helpers may use on a machine that is not owner-only, or *, from: the host id of the machine whose local sessions ask, or *, folders: absolute folders a request may also choose itself (that folder or below; [\"*\"] any; [] the template's own folder only), note?}: a request a rule covers starts at once as yours, without waiting for psr_decide_helper; never on an owner-only machine, and at most 30 a day from one machine), and auto-approval of permission requests (autoApprove: {all?: L0 | L1 | L2 | null, the level up to which the Router itself allows the requests of every task; trusted?: L3 | L4 | null, the level for tasks whose instruction came from a trusted source; sources?: the trusted ones, each client:<clientId> or helper:<hostId> (a helper task counts as the machine whose local session asked for it, never as who approved its start; a task the planner sends, and a turn the Router wrote in a client's name such as a reply carrying service answers, is nobody's and gets the ordinary level only), as psr_get_policy lists them in autoApprove.sourceChoices; secrets?: true to let trusted L4 include credentials and keys; hours?: how long from now it stays in force, null for no end}: fields left out keep their value; both levels null switches it off and forgets sources, secrets and the period. Never on an owner-only machine, never a turn the Router sends itself, never a request that is not the task's own turn's or is shown cut short, never a deny, and at most 30 dangerous requests in one task; everything else waits as before).",
         "security": [
           {
             "bearerAuth": []
@@ -2679,6 +2679,9 @@
                     },
                     "required": [],
                     "additionalProperties": false
+                  },
+                  "autoApprove": {
+                    "type": "object"
                   }
                 },
                 "required": [],

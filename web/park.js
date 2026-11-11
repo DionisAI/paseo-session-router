@@ -750,6 +750,9 @@ export function createPark(root, api) {
         const today = d.tasks.filter(t => t.state === 'completed' && t.updatedAt >= startOfDay()).length;
         const counter = $('#park-counter', root); if (counter) counter.innerHTML = `<b>${running}</b><span>個任務進行中</span><small>今日完成 ${today}${attention ? ` · 等你 ${attention}` : ''}</small>`;
         $('#park-stats', root).innerHTML = [['運行中', running, 'run'], ['排隊', queued, 'queue'], ['需留意', attention, 'warn'], ['今日完成', today, 'done']].map(([k, v, c]) => `<div class="park-stat park-stat-${c}${v ? ' has' : ''}"><b>${v}</b><span>${k}</span></div>`).join('');
+        // while the owner's auto-approval is in force the header says so, on every page
+        const au = d.policy?.autoApprove, mark = $('#park-auto', root);
+        if (mark) { mark.hidden = !au?.active; if (au?.active) { mark.textContent = `自動批准 · ${au.trusted ? `危險到 ${au.trusted}` : `一般到 ${au.all}`}`; mark.classList.toggle('is-danger', !!au.trusted); mark.title = `Router 自己批准權限請求：${au.all ? `所有任務到 ${au.all}` : '一般指令不自動'}；${au.trusted ? `可信來源的任務到 ${au.trusted}` : '危險指令不自動'}${au.until ? `。${new Date(au.until).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })} 自動關閉` : ''}。點這裡到「權限」頁修改。`; } }
         // 需留意 takes you to the first session that needs a look, waiting approvals first.
         const warn = $('.park-stat-warn', root), firstWarn = (d.permissions ?? [])[0]?.sessionRef ?? d.tasks.find(t => ATTENTION.has(t.state))?.target ?? d.sessions.find(s => s.externalActivity)?.id;
         if (warn && (firstWarn || d.peers?.held || d.helpers?.pending)) { warn.classList.add('is-link'); warn.title = firstWarn ? '查看需要留意的 session' : d.helpers?.pending ? '查看等你批准的幫手請求' : '查看等你放行的訊息'; warn.onclick = () => select(firstWarn ? { kind: 'session', id: firstWarn } : d.helpers?.pending ? { kind: 'helpers', id: 'all' } : { kind: 'peers', id: 'all' }); }
@@ -1184,12 +1187,14 @@ export function createPark(root, api) {
     function permissionBox(s) {
         const list = (state.data.permissions ?? []).filter(x => x.sessionRef === s.id); if (!list.length) return '';
         // a service turn's own note (serviceTurnNote) already says that only you approve it
+        const AUTO_WHY = { next: '符合自動批准：Router 下一輪（幾秒內）會批准', source: '沒有自動批准：這個任務的來源不在可信來源裡', level: '沒有自動批准：超過設定的等級', truncated: '沒有自動批准：內容太長被截斷了，要你自己看', secret: '沒有自動批准：牽涉憑證或金鑰', cap: '沒有自動批准：這個任務自動批准的危險指令已經到上限' };
         const approvers = x => x.routerTurn === 'service' ? '' : x.level === 'L4' || x.ownerOnly ? '只有你能批' : `可批：你${x.approvers?.includes('planner') ? '、規劃者' : ''}${x.approvers?.includes('frontend') ? '、派工的前臺' : ''}`;
         return `<section class="perm-box"><h3>等你批准</h3>${list.map(x => `<div class="perm">
             <p class="perm-head">${x.level ? `<span class="lv lv-${esc(x.level)}" title="${esc(x.why ?? '')}">${esc(x.level)} ${esc(x.levelName ?? '')}</span>` : ''}<b>${esc(x.tool)}</b>${x.description || x.title ? ` · ${esc(x.description || x.title)}` : ''}</p>
             ${x.detail ? `<pre class="perm-detail">${esc(x.detail)}</pre>` : ''}
             ${serviceTurnNote(x)}
             ${x.level ? `<p class="perm-note">${approvers(x) ? `${esc(approvers(x))} · ` : ''}${x.rule ? `規則 ${esc(x.rule)}` : '認不出來，按最高級處理'}${x.plannerSession ? ' · 這是規劃者自己的 session' : ''}</p>` : ''}
+            ${AUTO_WHY[x.autoWhy] ? `<p class="perm-note">${esc(AUTO_WHY[x.autoWhy])}</p>` : ''}
             ${x.canRespond ? `<div class="perm-actions"><button type="button" class="park-btn primary" data-perm="${esc(x.requestId)}" data-session="${esc(x.sessionRef)}" data-decision="allow">批准這一次</button><button type="button" class="park-btn ghost" data-perm="${esc(x.requestId)}" data-session="${esc(x.sessionRef)}" data-decision="deny">拒絕</button></div>` : `<p class="perm-note">${esc(x.reason ?? '')}</p>`}
             <p class="perm-note">${x.assignedBy ? `${esc(clientName(x.assignedBy))} 派的任務` : '不是經 Router 派的任務'}</p>
             ${x.routerTurn === 'service' && x.detail && /bash|shell|command/i.test(x.tool) ? `<p class="perm-note">要以後自動放行：把這條命令加進 ${esc(x.ask?.service ?? '這個服務')} 的「可跑的命令」（權限 › 服務呼叫）；等級規則不會替 Router 的服務輪批准。</p>` : ''}
@@ -1246,6 +1251,8 @@ export function createPark(root, api) {
     const can = scope => state.data.identity.scopes.includes(scope) || state.data.identity.scopes.includes('admin');
     const taskLink = t => `<button type="button" class="mini-task" data-task="${esc(t.id)}"><i style="--c:${clientColor(t.originKind)}"></i><span>${esc(clientName(t.originKind))} → <b class="state-${taskCls(t.state)}">${esc(STATE_NAMES[t.state] ?? t.state)}</b></span><em>${esc(shortTitle(taskTitle(t), 44))}</em></button>`;
     const hostLabel = id => state.data.hosts.hosts.find(h => h.id === id)?.label ?? id;
+    /** auto:all, auto:client:<id>, auto:helper:<host>: what the owner's auto-approval went by; null for any other rule. */
+    const autoRuleText = rule => { const m = /^auto:(all|client|helper)(?::(.+))?$/.exec(rule ?? ''); return !m ? null : m[1] === 'all' ? '自動批准 · 一般指令' : m[1] === 'client' ? `自動批准 · 可信來源 ${clientName(m[2])}` : `自動批准 · 可信來源 ${hostLabel(m[2])} 的幫手`; };
     /** Send work to this session. Busy sessions queue it; the running turn is never interrupted. */
     function composer(s) {
         if (!s.allowedActions?.includes('submit')) return '';
@@ -1382,7 +1389,7 @@ export function createPark(root, api) {
           <h3>指令</h3><pre class="task-text">${esc(t.prompt)}</pre>
           ${t.resultSummary ? `<h3>結果</h3><pre class="task-text is-result">${esc(t.resultSummary)}</pre>` : ''}
           ${msgs.length ? `<h3>中途消息</h3>${msgs.map(m => `<div class="mini-msg"><b>${esc(m.kind)}</b><span>${esc(m.text)}</span></div>`).join('')}` : ''}
-          ${t.approvals?.length ? `<h3>審批記錄</h3>${t.approvals.map(a => `<div class="mini-msg"><b>${a.decision === 'allow' ? '批准' : '拒絕'}</b><span>${esc(clientName(a.by))}${a.rule ? `（規則 ${esc(a.rule)}）` : ''} · ${esc(fmtTime(a.at))} · ${esc(a.tool)}${a.detail ? `：${esc(a.detail)}` : ''}</span></div>`).join('')}` : ''}
+          ${t.approvals?.length ? `<h3>審批記錄</h3>${t.approvals.map(a => `<div class="mini-msg"><b>${a.decision === 'allow' ? '批准' : '拒絕'}</b><span>${esc(clientName(a.by))}${a.rule ? `（${esc(autoRuleText(a.rule) ?? `規則 ${a.rule}`)}）` : ''} · ${esc(fmtTime(a.at))} · ${esc(a.tool)}${a.detail ? `：${esc(a.detail)}` : ''}</span></div>`).join('')}` : ''}
           ${taskActions(t)}
           ${mission?.total === 1 && can('submit') ? regroupForm(mission) : ''}
           ${t.completionEvidence && !/^Native turn_\w+ for /.test(t.completionEvidence) ? `<p class="inspector-hint">${esc(t.completionEvidence)}</p>` : ''}`;
@@ -2092,6 +2099,7 @@ export function createPark(root, api) {
         views.show(v); renderInspector(true); api.viewChanged?.(v);
     }
     root.querySelectorAll('[data-view]').forEach(b => b.onclick = () => setView(b.dataset.view));
+    { const mark = $('#park-auto', root); if (mark) mark.onclick = () => setView('policy'); }
     root.dataset.view = 'overview';
     resize(); setCamera(); frame();
 

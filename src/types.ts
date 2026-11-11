@@ -1,5 +1,6 @@
 import type { WeatherPlace } from './weather.js';
 import type { HelperAutoRule } from './helper.js';
+import type { AutoApprove } from './auto-approve.js';
 /** 'agent' is a Paseo session reporting back over its own channel credential, never a configured entry client. */
 /** planner: the Router's own planning session (credential minted by the Router); router: turns the Router itself sends it. */
 export type EntryKind = 'grokbot' | 'dot' | 'muse' | 'cli' | 'web' | 'agent' | 'planner' | 'router' | 'local';
@@ -398,6 +399,13 @@ export interface Task {
     missionPart?: string | null;
     /** A turn the Router itself sends (waking the planner); not user work, so consoles keep it out of the task garden. */
     system?: 'planner_feed' | null;
+    /** Dangerous requests (L3 and above) of this task the Router allowed under the owner's auto-approval; capped per task. */
+    autoDanger?: number;
+    /** The helper request (helper.ts) this task carries out; a task sent again after a transient failure keeps it. */
+    helperOf?: string | null;
+    /** A turn the Router wrote and sent in a client's name: the answers of the services its session asked (ask_reply), or word
+     * that a shared resource is now its (resource). It is not that client's own instruction. */
+    relayed?: 'ask_reply' | 'resource' | null;
     /** When the task last started waiting for a permission answer (for the approval timeout). */
     waitingSince?: number | null;
     /** This task re-sends a task whose turn failed on a transient provider error without doing any work. */
@@ -577,6 +585,8 @@ export interface PolicyState {
     a2a: A2APolicy;
     /** Helpers (helper.ts): the owner's standing rules, under which a covered request starts without waiting for a decision. */
     helpers: { auto: HelperAutoRule[] };
+    /** Auto-approval (auto-approve.ts): the requests the Router allows by itself, by level and by where the task came from. */
+    autoApprove: AutoApprove;
     updatedAt: number;
     by: string;
 }

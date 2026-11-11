@@ -241,9 +241,55 @@ export function createViews(page, ctx) {
         const hp = pol.helpers, helpers = hp && admin ? `<section class="pol-card"><h3>幫手自動批准</h3><p class="pol-line muted">本機 session 請求幫手（到別台機器、或別的資料夾做一個任務）時，符合規則的不用等你批准，其餘的照舊等你。</p>
             ${hp.auto.length ? hp.auto.map(r => `<div class="rule-row"><b>${esc(r.templateId === '*' ? '所有模板' : hp.templates.find(t => t.id === r.templateId)?.title ?? r.templateId)}</b><span>${esc(r.from === '*' ? '任何機器' : ctx.hostLabel(r.from))}的 session 提出${r.note ? ` · ${esc(r.note)}` : ''}</span></div>`).join('') : '<p class="pol-line muted">還沒有規則：每個請求都等你。</p>'}
             <div class="task-actions"><button type="button" class="park-btn${hp.auto.length ? '' : ' primary'}" data-open-helpers>${hp.auto.length ? '管理規則、看請求' : '新增規則'}</button></div></section>` : '';
-        box.innerHTML = planner + verify + servicesCard(pol, admin) + levels + helpers + rules + fronts;
+        // 自動批准: the requests the Router allows by itself (policy autoApprove): an ordinary level for every task, a dangerous one
+        // only for tasks whose instruction came from a source the owner trusts
+        const au = pol.autoApprove, when = ms => new Date(ms).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+        const autoCard = au ? (() => {
+            const set = au.all || au.trusted, expired = set && !au.active;
+            const state = au.active ? `生效中${au.trusted ? ` · 危險到 ${au.trusted}` : ''}${au.all ? ` · 一般到 ${au.all}` : ''}${au.until ? ` · 到 ${when(au.until)}` : ''}` : expired ? `已到期（${when(au.until)}），現在不自動` : '關閉';
+            const opt = (v, text, cur) => `<option value="${v}"${(cur ?? '') === v ? ' selected' : ''}>${text}</option>`, lvName = l => pol.levels.find(x => x.id === l)?.name ?? '';
+            const srcName = x => x.kind === 'client' ? (x.frontend ? `${esc(clientName(x.clientId))} 派的任務` : `你自己從「${esc(clientName(x.clientId))}」派的任務`) : `${esc(x.label)} 上本機 session 請求的幫手`;
+            const src = (id, text) => `<label class="check"><input type="checkbox" name="source" value="${esc(id)}"${au.sources.includes(id) ? ' checked' : ''}${dis}> ${text}</label>`;
+            const gone = au.sources.filter(id => !au.sourceChoices.some(x => x.id === id)), locked = data.hosts.hosts.filter(h => h.ownerApprovalOnly).map(h => h.label);
+            const hours = au.active && au.until ? 'keep' : au.until === null ? 'none' : '8';
+            return `<section class="pol-card pol-auto${au.active ? ' is-on' : ''}"><h3>自動批准 <span class="pol-state ${au.active ? 'state-warn' : 'muted'}">${esc(state)}</span></h3>
+              <p class="pol-line muted">session 照常提出請求；符合下面設定的，Router 直接批准並記在任務上，不用等你。其餘的照上面「誰能批准」等人。只會自動批准，不會自動拒絕。</p>
+              <form class="pol-form pol-auto-form" data-form="auto">
+                <label>一般指令 · 所有任務，自動到<select name="all"${dis}>${opt('', '不自動', au.all)}${['L0', 'L1', 'L2'].map(l => opt(l, `${l} ${esc(lvName(l))}`, au.all)).join('')}</select></label>
+                <label>危險指令 · 只限可信來源，自動到<select name="trusted"${dis}>${opt('', '不自動', au.trusted)}${opt('L3', `L3 ${esc(lvName('L3'))}`, au.trusted)}${opt('L4', 'L4 全部（Full access）：交易、認不出的命令也算', au.trusted)}</select></label>
+                <fieldset class="pol-sources"><legend>可信來源：危險指令只在這些來源的任務裡自動</legend>${au.sourceChoices.map(x => src(x.id, srcName(x))).join('')}${gone.map(id => src(id, `${esc(id)}（設定裡已經沒有，不會生效）`)).join('')}</fieldset>
+                <label class="check"><input type="checkbox" name="secrets"${au.secrets ? ' checked' : ''}${dis}> 連讀憑證、金鑰也自動（只在 L4 有用，不建議）</label>
+                <label>有效期<select name="hours"${dis}>${hours === 'keep' ? opt('keep', `維持現在的（到 ${esc(when(au.until))}）`, 'keep') : ''}${opt('none', '一直有效，到你關掉', hours)}${[[1, '1 小時'], [8, '8 小時'], [24, '24 小時']].map(([v, l]) => opt(String(v), `從現在起 ${l}`, hours)).join('')}</select></label>
+                ${admin ? `<div class="task-actions"><button type="submit" class="park-btn primary">儲存</button>${set ? '<button type="button" class="park-btn" data-auto-off>關閉自動批准</button>' : ''}<button type="button" class="park-btn ghost" data-auto-reset hidden>還原</button></div><p class="pol-line state-warn pol-auto-armed" hidden>危險指令會由 Router 自動批准，不再等你；現在正在等的、符合條件的請求也會立刻批准。確定的話再按一次。</p>` : ''}
+              </form>
+              <p class="pol-line muted">永遠不自動：${locked.length ? `只有你能批的機器（${esc(locked.join('、'))}）、` : ''}Router 自己的輪（驗收、服務呼叫）、規劃者自己的 session、不是這個任務這一輪提出的請求、內容被截斷的請求。每個任務最多自動批准 ${Number(au.perTask)} 條危險指令，其餘等你。</p>
+              <p class="pol-line muted">來源怎麼算：幫手任務算提出請求的那台機器，不算批准它開始的人；其他算派任務的那一方。規劃者派的任務、Router 代寫的輪（服務的回覆、資源輪到你的通知）不算任何人的指令，只適用一般指令那一段。關閉後，可信來源和有效期都會清掉，下次要重新選。</p></section>`;
+        })() : '';
+        box.innerHTML = planner + verify + servicesCard(pol, admin) + levels + autoCard + helpers + rules + fronts;
         const save = async (args, done) => { try { await ctx.act('psr_set_policy', args); ctx.toast(done); } catch (err) { ctx.toast(err.message, true); policySig = null; render(); } };
         bindServices(box, pol);
+        // 自動批准: unsaved choices survive live redraws; turning the dangerous reach on (or widening it) takes a second click
+        const af = box.querySelector('form[data-form="auto"]');
+        if (af && admin) {
+            const go = af.querySelector('[type=submit]'), back = af.querySelector('[data-auto-reset]'), hint = af.querySelector('.pol-auto-armed'), disarm = () => { delete af.dataset.armed; go.textContent = '儲存'; go.title = ''; hint.hidden = true; };
+            af.addEventListener('input', () => { af.dataset.dirty = '1'; back.hidden = false; disarm(); });
+            back.onclick = () => { delete af.dataset.dirty; policySig = null; render(); };
+            const off = af.querySelector('[data-auto-off]'); if (off) off.onclick = () => { delete af.dataset.dirty; save({ autoApprove: { all: null, trusted: null } }, '自動批准已關閉：每個請求照舊等人'); };
+            af.onsubmit = e => {
+                e.preventDefault();
+                const all = af.all.value || null, trusted = af.trusted.value || null, sources = [...af.querySelectorAll('input[name=source]:checked')].map(x => x.value), secrets = af.secrets.checked, h = af.hours.value;
+                if (trusted && !sources.length) return ctx.toast('危險指令要自動，至少勾一個可信來源；不然把它選成「不自動」', true);
+                // only what you changed is sent: what another window changed meanwhile in a field you left alone stays as it is
+                const sameList = (a, b) => a.length === b.length && a.every(x => b.includes(x)), keepPeriod = h === 'keep' || (h === 'none' && au.until === null);
+                const args = { ...(all !== au.all ? { all } : {}), ...(trusted !== au.trusted ? { trusted } : {}), ...(sameList(sources, au.sources) ? {} : { sources }), ...(secrets !== au.secrets ? { secrets } : {}), ...(keepPeriod ? {} : { hours: h === 'none' ? null : Number(h) }) };
+                if (!Object.keys(args).length) { delete af.dataset.dirty; back.hidden = true; return ctx.toast('沒有變更'); }
+                // a second click for anything that widens the dangerous reach: switching it on, a higher level, a new source, credentials, a new or longer period
+                const risky = !!trusted && (!au.active || 'trusted' in args || args.secrets === true || 'hours' in args || sources.some(x => !au.sources.includes(x)));
+                if (risky && af.dataset.armed !== '1') { af.dataset.armed = '1'; hint.hidden = false; go.textContent = '再按一次確定'; go.title = '危險指令會由 Router 自動批准，現在正在等的、符合條件的也會立刻批准'; setTimeout(() => { if (af.isConnected && af.dataset.armed === '1') disarm(); }, 8000); return; }
+                delete af.dataset.dirty; disarm();
+                save({ autoApprove: args }, all || trusted ? '自動批准已更新' : '自動批准已關閉：每個請求照舊等人');
+            };
+        }
         // the panel lists what waits for the owner first: coming from here, it opens at its rules
         box.querySelectorAll('[data-open-helpers]').forEach(b => b.onclick = () => { ctx.select({ kind: 'helpers', id: 'all' }); document.querySelector('#park-inspector .helper-rules')?.scrollIntoView({ block: 'start' }); });
         const ttlForm = box.querySelector('form[data-form="ttl"]'); if (ttlForm) ttlForm.ttl.onchange = () => { ttlForm.ttl.blur(); save({ approvalTimeoutMs: Number(ttlForm.ttl.value) }, Number(ttlForm.ttl.value) ? '審批逾時已更新' : '已關閉審批逾時'); };
@@ -253,7 +299,7 @@ export function createViews(page, ctx) {
         box.querySelectorAll('[data-rule-del]').forEach(b => b.onclick = () => save({ rules: pol.rules.filter(r => r.id !== b.dataset.ruleDel) }, '規則已刪除'));
         box.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => save({ ceilings: { [b.dataset.preset]: TARGET_SCOPES } }, `${clientName(b.dataset.preset)} 已設成建議上限`));
         box.querySelectorAll('[data-reset]').forEach(b => b.onclick = () => save({ ceilings: { [b.dataset.reset]: null } }, `${clientName(b.dataset.reset)} 改回設定檔`));
-        box.querySelectorAll('form[data-form]').forEach(f => f.onsubmit = async (e) => {
+        box.querySelectorAll('form[data-form]:not([data-form="auto"])').forEach(f => f.onsubmit = async (e) => {
             e.preventDefault(); const kind = f.dataset.form;
             if (kind === 'test') { const out = $('#pg-test-out'); try { const r = await ctx.read('psr_classify_permission', { tool: 'Bash', detail: f.cmd.value.trim() || ' ' }); out.innerHTML = `${lv(r.level, r.levelName)} ${esc(r.ruleId ? `規則 ${r.ruleId}` : '認不出來，按最高級處理')} · 可批：你${r.approvers.includes('planner') ? '、規劃者' : ''}${r.approvers.includes('frontend') ? '、前臺' : ''}`; } catch (err) { out.textContent = err.message; } return; }
             if (kind === 'rule') { const rule = { id: `r${Date.now().toString(36)}`, level: f.level.value, pattern: f.pattern.value.trim(), ...(f.note.value.trim() ? { note: f.note.value.trim() } : {}) }; f.querySelector('[type=submit]').blur(); return save({ rules: [...pol.rules, rule] }, '規則已加入'); }

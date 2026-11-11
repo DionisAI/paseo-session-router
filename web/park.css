@@ -772,3 +772,17 @@ button.ask-row { cursor: pointer; } button.ask-row:hover { background: var(--pap
 .pg-head .park-btn.ghost { background: var(--paper-2); color: var(--ink); text-decoration: none; box-shadow: 0 0 0 2px var(--outline), inset 0 -2px 0 rgb(90 44 13 / .25); padding: 5px 10px; font-size: 12.5px; }
 .pg-head .park-btn.ghost:hover:not(:disabled) { background: #ffe9b5; }
 .pg-head .park-btn.ghost.is-alert { color: oklch(45% 0.16 55); }
+/* 自動批准: the header mark while it is in force, and its card on the 權限 page */
+/* a tag hanging off the header card's top edge: always in view, and it takes no room in the card */
+.park-auto { position: absolute; top: -11px; right: 16px; padding: 2px 8px; border: 0; border-radius: 3px; font: inherit; font-size: 11.5px; font-weight: 700; line-height: 1.5; cursor: pointer; white-space: nowrap; color: var(--ink); background: #ffe9b5; box-shadow: 0 0 0 2px var(--outline); }
+.park-auto[hidden] { display: none; }
+.park-auto.is-danger { color: #fff8ea; background: oklch(52% 0.17 40); }
+.pol-auto.is-on { background: oklch(96% 0.05 80 / .55); }
+.pol-auto-form { display: grid; align-items: start; gap: 10px; }
+.pol-auto-form select { width: 100%; }
+.pol-sources { display: grid; gap: 5px; margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; font-size: 12.5px; }
+.pol-sources legend { padding: 0 4px; font-size: 12px; color: var(--muted); }
+.pol-auto-form .task-actions { flex-wrap: wrap; }
+.pol-auto-form .task-actions .park-btn { flex: none; }
+.pol-auto .state-warn { color: oklch(50% 0.16 50); }
+.pol-auto-armed { font-weight: 600; }

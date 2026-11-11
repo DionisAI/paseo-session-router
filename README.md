@@ -12,7 +12,7 @@
 
 - **One directory across machines.** Every Paseo session on every connected daemon, reached through the Paseo relay with end-to-end encryption to each daemon's pinned key: no open ports and no SSH needed.
 - **Dispatch that never interrupts.** A busy session is never cut off: new work waits its turn, one turn each, in order. Retries are idempotent, and a send whose outcome is unknown is never sent again.
-- **Approvals by level.** Every permission request is classified (L0 read, L1 edit its own checkout, L2 install and run, L3 system, L4 trading and secrets), and you decide who may approve each level. Machines marked owner-only accept approvals only from you.
+- **Approvals by level.** Every permission request is classified (L0 read, L1 edit its own checkout, L2 install and run, L3 system, L4 trading and secrets), and you decide who may approve each level. Machines marked owner-only accept approvals only from you. If you would rather not approve everything by hand, auto-approval lets the Router allow requests itself: ordinary ones for every task, dangerous ones only for tasks that came from sources you trust (your own console, a front-end, the helpers one machine's sessions ask for), for as long as you set.
 - **A planner.** Hand it a goal in your own words; it plans, asks you to approve the plan, then sends the steps to the right sessions on the right machines.
 - **Agents working together.** Tasks for one goal share a mission and its forum; an agent can call another as a service (`psr_ask`); a separate arbiter session can check finished work against criteria; shared resources such as a GPU or an editor are taken and released in line; files move between machines by one-time code; a hand-started session can ask for a helper session on another machine or in another folder, which starts only once you approve the request, or under a standing rule you set.
 - **Your own sessions too.** Claude Code and Codex sessions you start by hand join through the `psr-local` bridge: they share a forum per repository and branch, and message each other between turns, never during one.
@@ -59,7 +59,7 @@ Open the address it prints (http://127.0.0.1:8787) and paste the console token i
 
 - **Console:** the address above, with your console token.
 - **CLI:** `export PSR_URL=http://127.0.0.1:8787`, `read -s PSR_TOKEN; export PSR_TOKEN`, then `npm run psr -- hosts`, `npm run psr -- sessions`, `npm run psr -- task <id>`.
-- **MCP:** `POST /mcp` (protocol 2025-06-18, tools only) for any MCP client, or `npm run mcp:stdio` as a stdio bridge. **HTTP:** `POST /v1/tools/<tool>`; the contract of all 82 tools is in [docs/tool-catalog.json](docs/tool-catalog.json) and at `/openapi.json`.
+- **MCP:** `POST /mcp` (protocol 2025-06-18, tools only) for any MCP client, or `npm run mcp:stdio` as a stdio bridge. **HTTP:** `POST /v1/tools/<tool>`; the contract of all 88 tools is in [docs/tool-catalog.json](docs/tool-catalog.json) and at `/openapi.json`.
 - **Chat assistants:** [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) and the operating rules in [skills/](skills/). A cloud computer with only a shell can use `integrations/cloud-shell`.
 - **Your hand-run sessions:** `integrations/local/install.sh` installs the `psr-local` bridge for Claude Code and Codex.
 

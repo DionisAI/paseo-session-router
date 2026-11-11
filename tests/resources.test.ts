@@ -428,6 +428,7 @@ test('resources: a Paseo session in line gets a turn when the resource is its ow
     await f.router.tick();
     const turn = turnsFor(gpu).at(-1)!;
     assert.deepEqual([turn.replyToTaskId, turn.originClientId, turn.state, turn.missionId, gpuDemo.sends.length], [b.id, 'grokbot', 'queued', 'm-res', sendsBefore]);
+    assert.equal(turn.relayed, 'resource', 'the Router wrote this turn: it is not Grokbot\'s own instruction');
     assert.match(turn.prompt, /^\[Router\] The shared resource lab3\/unreal-editor \(Unreal Editor\) is yours now: it was your turn in line \(you asked for it in task task_\w+\)\. Continue the work/);
     assert.deepEqual([claim(gpu.id).pendingTurn, claim(gpu.id).turnTaskIds], [null, [turn.id]]);
     // it runs once the waiting turn has ended, and only once
