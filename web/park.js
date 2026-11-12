@@ -3,7 +3,7 @@
 // The sky follows the clock, season and weather of the place the Router is configured for (else this computer's clock).
 // Pure presentation over the same data the console loads; it never changes routing.
 import * as THREE from '/vendor/three-0.186.1/three.module.js';
-import { createViews, loginState, providerName } from '/views.js';
+import { createViews, loginState, providerName, machineRows, machineWorst, machineAlertText } from '/views.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -664,7 +664,8 @@ export function createPark(root, api) {
         }
         applySky();
     }
-    function hostTag(el, h, online) { el.innerHTML = `<i style="--c:${online ? '#3a9a5b' : '#9aa0a6'}"></i><b>${esc(h.label)}</b>${online ? '' : '<span class="tag-state state-off">離線</span>'}`; el.title = h.description ?? ''; }
+    function hostTag(el, h, online) { const a = machineWorst(h.machine); // a machine in trouble says so on its name tag: a disk filling up, memory running out
+        el.innerHTML = `<i style="--c:${online ? '#3a9a5b' : '#9aa0a6'}"></i><b>${esc(h.label)}</b>${online ? '' : '<span class="tag-state state-off">離線</span>'}${a ? `<span class="tag-state state-${a.level === 'danger' ? 'err' : 'warn'}">${esc(machineAlertText(a))}</span>` : ''}`; el.title = h.description ?? ''; }
     /** One state word per session for signs and the list: idle sessions say nothing, everything else is colour-coded. */
     function sessionState(s) {
         const d = state.data, tasks = d.tasks.filter(t => t.target === s.id), active = tasks.find(t => ACTIVE.has(t.state)), queued = tasks.filter(t => t.state === 'queued').length;
@@ -1433,6 +1434,7 @@ export function createPark(root, api) {
             const m = localMember(f.dataset.to);
             run(f.querySelector('[type=submit]'), async () => { const r = await api.act('psr_peer_send', { to: f.dataset.to, kind: f.kind.value, text, ...(f.urgent?.checked ? { urgent: true } : {}) }); f.reset(); delete f.dataset.dirty; return r; },
                 r => r.delivery === 'held' ? '停下等你放行' : r.urgent ? '急件：它這一輪裡就會收到' : r.kind === 'notice' || m?.takes !== 'push' ? '已放進它的收件匣，它查收件匣時會看到' : `已排入：在它兩輪之間送進去${m && !m.live ? '（它最近沒回應，等它回來或過期）' : ''}`); });
+        el.querySelectorAll('form[data-stat-revoke]').forEach(f => twoStep(f, b => run(b, () => api.act('psr_revoke_stat_credential', { credentialId: f.dataset.statRevoke }), () => '已撤銷：這台的回報程式會自己停下')));
         el.querySelectorAll('form[data-revoke]').forEach(f => twoStep(f, b => run(b, () => api.act('psr_revoke_local_credential', { credentialId: f.dataset.revoke }), r => `已撤銷${r.closedSessions.length ? `，${r.closedSessions.length} 個 session 已斷開` : ''}`)));
         el.querySelectorAll('form[data-take]').forEach(f => twoStep(f, b => run(b, () => api.act('psr_release_resource', { resourceId: f.dataset.take, memberId: f.dataset.member }), () => '已收回；排隊的下一個會被通知')));
         el.querySelectorAll('form[data-res-remove]').forEach(f => twoStep(f, b => run(b, () => api.act('psr_remove_resource', { resourceId: f.dataset.resRemove }), r => `已移除 ${r.removed}${r.endedClaims ? `，${r.endedClaims} 個 session 已被告知` : ''}`)));
@@ -1629,6 +1631,24 @@ export function createPark(root, api) {
     }
     // 機器憑證: one per machine for the sessions the owner runs by hand there. Issued only from the Router host (it must never
     // pass through a page); revoking one closes its sessions at once. Owner-only machines take none.
+    // 系統狀態: the machine's own figures, from its reporter (integrations/status) or, for the Router's machine without one,
+    // from the Router itself. A machine that never reported gets the command that installs the reporter.
+    function machineBlock(h) {
+        const m = h.machine, admin = canEdit(), cred = (state.data.hosts.statCredentials ?? []).find(c => c.hostId === h.id);
+        const how = () => { const cmd = `sh -c 'T=$(mktemp -d) && curl -fsS ${location.origin}/integrations/status/install.sh -o "$T/install.sh" </dev/null && sh "$T/install.sh" ${location.origin}; rc=$?; rm -f "$T/install.sh"; rmdir "$T"; exit $rc'`;
+            return `<details class="task-more" data-open-key="stat-install:${esc(h.id)}"><summary>${m?.source === 'report' ? '重新安裝回報程式' : '安裝回報程式'}</summary>
+              <p class="inspector-hint">回報程式每分鐘送一次 CPU、記憶體、磁碟的數字，不送程序清單、檔名或內容，也不接受 Router 的指令。在這台機器上執行下面這行，並用管道把它的狀態憑證接到這行的標準輸入（<code>發憑證的命令 | 下面這行</code>）：憑證用 Router 主機上的 <code>psr_issue_stat_credential {"hostId":"${esc(h.id)}"}</code> 發，直接用管道接過來，不經過網頁。</p>
+              <form class="login-cmd"><code>${esc(cmd)}</code><button type="button" class="park-btn ghost" data-copy="${esc(cmd)}">複製</button></form></details>`; };
+        const credLine = !admin || !cred ? '' : `<form class="tpl-row" data-stat-revoke="${esc(cred.id)}" data-armed-text="再按一次撤銷"><p><b>狀態憑證</b><span class="login-state state-${cred.exp > Date.now() ? 'run' : 'err'}">${cred.exp > Date.now() ? `有效 · ${esc(new Date(cred.exp).toLocaleDateString('zh-TW', { year: 'numeric', month: 'numeric', day: 'numeric' }))} 到期` : '已過期'}</span></p>
+              <small>${cred.lastReportAt ? `上次回報 ${esc(relTime(cred.lastReportAt))}` : '還沒有回報過'} · 只能回報這台的數字</small><div class="inspector-actions"><button type="submit" class="park-btn">撤銷</button></div></form>`;
+        if (!m) return `<h3>系統狀態 <span class="login-state muted">沒有回報</span></h3><p class="inspector-hint">這台沒有裝回報程式，或者它超過一天沒有回報。</p>${credLine}${admin ? how() : ''}`;
+        const [word, cls] = m.stale ? ['回報停了', 'muted'] : m.state === 'danger' ? ['有問題', 'err'] : m.state === 'warn' ? ['要留意', 'warn'] : ['正常', 'run'];
+        const up = m.uptimeSec === null ? '' : `開機 ${m.uptimeSec >= 172800 ? `${Math.floor(m.uptimeSec / 86400)} 天` : m.uptimeSec >= 7200 ? `${Math.floor(m.uptimeSec / 3600)} 小時` : `${Math.max(1, Math.round(m.uptimeSec / 60))} 分鐘`} · `;
+        return `<h3>系統狀態 <span class="login-state state-${cls}">${word}</span></h3>
+          <div class="m-rows${m.stale ? ' is-stale' : ''}">${machineRows(m).map(([, name, pct, level, detail]) => `<div class="m-row is-${level}"><span class="m-name">${esc(name)}</span><span class="m-bar"><b style="--w:${pct}%"></b></span><span class="m-val">${pct}%</span><small>${esc(detail)}</small></div>`).join('')}</div>
+          <p class="inspector-hint">${up}${m.source === 'router' ? 'Router 自己量的（這台是 Router 所在的機器）：沒有磁碟和 CPU 使用率，裝了回報程式才有。' : m.stale ? `${esc(relTime(m.reportedAt))}之後沒有再回報，上面是最後一次的數字。` : `${esc(relTime(m.reportedAt))}回報，每分鐘一次。`}</p>
+          ${credLine}${admin && (m.source === 'router' || m.stale) ? how() : ''}`;
+    }
     function credentialBlock(h) {
         if (!canEdit() || h.ownerApprovalOnly) return '';
         const cs = (state.data.hosts.localCredentials ?? []).filter(c => c.hostId === h.id).sort((a, b) => b.createdAt - a.createdAt), now = Date.now();
@@ -1751,6 +1771,7 @@ export function createPark(root, api) {
               ${h.tags?.length ? `<div class="chips">${h.tags.map(t => `<span class="chip">${esc(t)}</span>`).join('')}</div>` : ''}
               ${h.rules?.length ? `<ul class="rules">${h.rules.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
               <dl><dt>Paseo daemon</dt><dd>${ds.map(x => `${esc(x.label)} · ${x.connection === 'online' ? '在線' : esc(x.connection)}`).join('<br>')}</dd><dt>Session</dt><dd>${ss.length} 個</dd></dl>
+              ${machineBlock(h)}
               ${loginBlock(h, ds)}
               ${createBlock(h)}
               ${resourceSummary(h)}

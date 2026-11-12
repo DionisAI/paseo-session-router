@@ -12,6 +12,7 @@ import { PLAIN_HOLD_MS } from './services.js';
 import { ASK_TOOL } from './agent-channel.js';
 import { Fault, assert, authFingerprint } from './util.js';
 import { localPlace, localThread } from './local.js';
+import { STAT_REPORT_BYTES } from './machine-status.js';
 import type { Principal } from './types.js';
 import { weatherSource, type WeatherSource } from './weather.js';
 export interface AppOptions {
@@ -42,7 +43,7 @@ export async function startHttp(router: Router, options: AppOptions = {}) {
     const integrationFiles: Record<string, [
         string,
         string
-    ]> = { '/integrations/cloud-shell/install.sh': ['install.sh', 'text/plain; charset=utf-8'], '/integrations/cloud-shell/psr': ['psr', 'text/plain; charset=utf-8'], '/integrations/cloud-shell/AGENT.md': ['AGENT.md', 'text/markdown; charset=utf-8'], '/integrations/local/install.sh': ['../local/install.sh', 'text/plain; charset=utf-8'], '/integrations/local/psr-local.mjs': ['../local/psr-local.mjs', 'text/plain; charset=utf-8'], '/integrations/local/psr-hook.mjs': ['../local/psr-hook.mjs', 'text/plain; charset=utf-8'], '/integrations/local/psr-xfer.mjs': ['../local/psr-xfer.mjs', 'text/plain; charset=utf-8'] };
+    ]> = { '/integrations/cloud-shell/install.sh': ['install.sh', 'text/plain; charset=utf-8'], '/integrations/cloud-shell/psr': ['psr', 'text/plain; charset=utf-8'], '/integrations/cloud-shell/AGENT.md': ['AGENT.md', 'text/markdown; charset=utf-8'], '/integrations/local/install.sh': ['../local/install.sh', 'text/plain; charset=utf-8'], '/integrations/local/psr-local.mjs': ['../local/psr-local.mjs', 'text/plain; charset=utf-8'], '/integrations/local/psr-hook.mjs': ['../local/psr-hook.mjs', 'text/plain; charset=utf-8'], '/integrations/local/psr-xfer.mjs': ['../local/psr-xfer.mjs', 'text/plain; charset=utf-8'], '/integrations/status/install.sh': ['../status/install.sh', 'text/plain; charset=utf-8'], '/integrations/status/psr-stat.py': ['../status/psr-stat.py', 'text/plain; charset=utf-8'] };
     const buckets = new Map<string, {
         window: number;
         count: number;
@@ -52,9 +53,9 @@ export async function startHttp(router: Router, options: AppOptions = {}) {
      * stream just ends. */
     const streams = new Map<ServerResponse, () => void>();
     const json = (res: ServerResponse, status: number, body: unknown) => { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
-    async function body(req: IncomingMessage) { assert(!req.headers['content-length'] || Number(req.headers['content-length']) <= 65536, 'PAYLOAD_TOO_LARGE', 'Request exceeds 64 KiB', 413); assert(req.headers['content-type']?.split(';')[0] === 'application/json', 'UNSUPPORTED_MEDIA_TYPE', 'Use application/json', 415); const chunks: Buffer[] = []; let bytes = 0; for await (const chunk of req) {
+    async function body(req: IncomingMessage, max = 65536) { assert(!req.headers['content-length'] || Number(req.headers['content-length']) <= max, 'PAYLOAD_TOO_LARGE', `Request exceeds ${max} bytes`, 413); assert(req.headers['content-type']?.split(';')[0] === 'application/json', 'UNSUPPORTED_MEDIA_TYPE', 'Use application/json', 415); const chunks: Buffer[] = []; let bytes = 0; for await (const chunk of req) {
         bytes += Buffer.byteLength(chunk);
-        assert(bytes <= 65536, 'PAYLOAD_TOO_LARGE', 'Request exceeds 64 KiB', 413);
+        assert(bytes <= max, 'PAYLOAD_TOO_LARGE', `Request exceeds ${max} bytes`, 413);
         chunks.push(Buffer.from(chunk));
     } try {
         return JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -122,6 +123,14 @@ export async function startHttp(router: Router, options: AppOptions = {}) {
                 return;
             }
             assert(!url.searchParams.has('token') && !url.searchParams.has('access_token'), 'INVALID_ARGUMENT', 'Never put bearer tokens in URLs');
+            // a machine's status reporter (integrations/status): its credential (psrs_…) is good for this one call and is no
+            // identity anywhere else (Auth refuses it), so it is taken here, before any entry is authenticated
+            if (path === '/local/stat' && req.method === 'POST') {
+                const token = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
+                router.statHostOf(token);
+                json(res, 200, router.reportMachine(token, await body(req, STAT_REPORT_BYTES)));
+                return;
+            }
             // A front-end's scopes are the owner's ceiling narrowed by the planner's grant (both from the policy).
             const p = router.effective(auth.authenticate(req.headers.authorization));
             if (p.entryKind === 'local') res.setHeader('x-psr-tools', localToolsTag());

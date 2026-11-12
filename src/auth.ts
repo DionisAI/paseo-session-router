@@ -4,7 +4,8 @@ import type { Store } from './store.js';
 import { Fault, assert } from './util.js';
 function digest(s: string) { return createHash('sha256').update(s).digest(); }
 export class Auth {
-    /** agent verifies per-session channel credentials (psra_…), local machine credentials (psrl_…); configured entry tokens are checked below. */
+    /** agent verifies per-session channel credentials (psra_…), local machine credentials (psrl_…); configured entry tokens are checked below.
+     * A status credential (psrs_…) is nobody: it is taken by POST /local/stat alone, before anything here. */
     constructor(private config: RouterConfig, private store: Store, private agent?: (token: string) => Principal, private local?: (token: string) => Principal) { const hashes = new Set<string>(); for (const c of config.clients) {
         if (c.disabled)
             continue;
@@ -17,7 +18,8 @@ export class Auth {
     authenticate(header: string | undefined): Principal { assert(header?.startsWith('Bearer '), 'UNAUTHORIZED', 'A bearer token is required', 401); const token = header!.slice(7); assert(token.length <= 512, 'UNAUTHORIZED', 'Invalid token', 401); if (token.startsWith('psra_') || token.startsWith('psrp_')) {
         assert(this.agent, 'UNAUTHORIZED', 'Agent channels are not enabled', 401);
         return this.agent(token);
-    } if (token.startsWith('psrl_')) {
+    } if (token.startsWith('psrs_'))
+        throw new Fault('UNAUTHORIZED', 'A status credential only reports machine status (POST /local/stat)', 401); if (token.startsWith('psrl_')) {
         assert(this.local, 'UNAUTHORIZED', 'Local sessions are not enabled', 401);
         return this.local(token);
     } const h = digest(token); for (const c of this.config.clients) {

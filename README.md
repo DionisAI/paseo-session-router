@@ -16,6 +16,7 @@
 - **A planner.** Hand it a goal in your own words; it plans, asks you to approve the plan, then sends the steps to the right sessions on the right machines.
 - **Agents working together.** Tasks for one goal share a mission and its forum; an agent can call another as a service (`psr_ask`); a separate arbiter session can check finished work against criteria; shared resources such as a GPU or an editor are taken and released in line; files move between machines by one-time code; a hand-started session can ask for a helper session on another machine or in another folder, which starts only once you approve the request, or under a standing rule you set.
 - **Your own sessions too.** Claude Code and Codex sessions you start by hand join through the `psr-local` bridge: they share a forum per repository and branch, and message each other between turns, never during one.
+- **Machine status.** A small reporter on each machine tells the Router how busy its CPUs are and how full its memory and disks are. The console shows it on every machine and warns when a disk fills up; planners read it too. Its credential can do nothing but report.
 - **A console.** A 3D overview of machines, sessions and tasks, plus views for machines (logins, templates, local sessions, resources), tasks, the relations between sessions, and permissions.
 
 ![Relations: who gave whom work, handoffs, service calls, messages and files](docs/images/relations.png)
@@ -59,9 +60,10 @@ Open the address it prints (http://127.0.0.1:8787) and paste the console token i
 
 - **Console:** the address above, with your console token.
 - **CLI:** `export PSR_URL=http://127.0.0.1:8787`, `read -s PSR_TOKEN; export PSR_TOKEN`, then `npm run psr -- hosts`, `npm run psr -- sessions`, `npm run psr -- task <id>`.
-- **MCP:** `POST /mcp` (protocol 2025-06-18, tools only) for any MCP client, or `npm run mcp:stdio` as a stdio bridge. **HTTP:** `POST /v1/tools/<tool>`; the contract of all 88 tools is in [docs/tool-catalog.json](docs/tool-catalog.json) and at `/openapi.json`.
+- **MCP:** `POST /mcp` (protocol 2025-06-18, tools only) for any MCP client, or `npm run mcp:stdio` as a stdio bridge. **HTTP:** `POST /v1/tools/<tool>`; the contract of all 90 tools is in [docs/tool-catalog.json](docs/tool-catalog.json) and at `/openapi.json`.
 - **Chat assistants:** [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) and the operating rules in [skills/](skills/). A cloud computer with only a shell can use `integrations/cloud-shell`.
 - **Your hand-run sessions:** `integrations/local/install.sh` installs the `psr-local` bridge for Claude Code and Codex.
+- **Machine status:** `integrations/status/install.sh` installs the reporter on a machine, with a status credential from `psr_issue_stat_credential` on its standard input ([docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), Machine status).
 
 ## Security
 

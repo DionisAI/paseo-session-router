@@ -31,7 +31,7 @@ Demo 有三台模擬主機、四個 daemon、五個 Session；同一 native Agen
 左上角的切換是同一個 3D 世界裡的四個鏡頭位置，切換時鏡頭飛過去，不會跳成平面頁面；左邊的清單面板和右側面板在各個視角裡都一樣：
 
 - **總覽**：整個世界——機器公園和任務花園。
-- **機器**：鏡頭飛到機器公園。左邊面板是機器卡片和它們的 session（模型、目錄、最近一個任務），可搜尋、按狀態篩選。點 session 後在右側面板直接**派任務**（忙時排隊，不打斷正在跑的一輪）、暫停／恢復後續派工、看最近任務和中途消息、讀寫工作區筆記（Frontier）、改名和寫說明。
+- **機器**：鏡頭飛到機器公園。左邊面板是機器卡片和它們的 session（模型、目錄、最近一個任務），可搜尋、按狀態篩選。每張機器卡片有 CPU、記憶體、磁碟三條量表（要裝機器狀態回報程式），點開機器看每個磁碟的明細。點 session 後在右側面板直接**派任務**（忙時排隊，不打斷正在跑的一輪）、暫停／恢復後續派工、看最近任務和中途消息、讀寫工作區筆記（Frontier）、改名和寫說明。
 - **任務**：鏡頭飛到任務花園。**一株植物是一個任務（mission）**——使用者交給大腦的一個目標，可能跨多台機器、多個 session；一個子任務（例如「盤點」「升級」）是一根主枝，主枝上每一步一根小枝；沒有子任務時，每一條交接／回覆鏈是一根枝。枝頭顯示這一步的狀態：發光的綠芽是運行中，琥珀色燈籠是等你（審批或對帳），灰色花苞是排隊，開花是完成（花色＝誰派的），下垂的褐色枝頭是失敗。前排是需要你的任務（含未處理的失敗），中排是進行中和排隊，後排是 24 小時內完成的；更早完成的移進後面的**溫室**，點溫室或清單的「歷史」篩選隨時查看。任務的整體狀態取最緊急的一步：需要你 → 進行中 → 排隊 → 未處理的失敗 → 完成（失敗後重試成功記為「重試後完成」）。session 和機器不是花園裡的物件，只出現在每一步的說明裡（例如「等同一個 session 的上一個任務」「GPU · Research · eth-mm」）。左邊的清單是一棵樹：任務 → 子任務 → 步驟 → 交接／回覆；點植物或清單項，右側面板顯示任務名稱（可改名）、進度條、等你批准的請求和每一步在做什麼；點一步看完整指令、結果、中途消息、審批記錄，並可取消排隊中的步驟、回覆、交接，或（管理員）釋放寫入鎖。「完成」只代表 turn 結束，面板會標明是否已驗證。
 
 - **權限**：鏡頭飛到中央的 Router。這裡設定規劃者（用哪個 Claude 模板建立、多久喚醒一次、每小時最多幾次、啟用或停用）、**每個權限等級由誰批准**、**自動批准**（哪些請求不用等人）、等級規則（內建規則可開關，可以加自己的規則，還能試判一條命令）、以及每個前臺（Muse、Grokbot、dot）的**權限上限**。
@@ -89,7 +89,8 @@ Grokbot / dot / Muse / Web / CLI
 | 幫手 | 本機 session 自己不能建 session、不能派任務。要到別台機器或別的資料夾做事時，它用 `psr_local_helper_request` 請求一個幫手：選一個模板（決定機器、模型、權限模式），可以另外指定那台機器上的資料夾，寫清楚任務。你在總控臺「機器 › 幫手」看到誰提的、在哪台機器哪個資料夾、用什麼模型和模式、任務全文，批准之前什麼都不會開始；批准後 Router 建 session、以你的名義派任務，做完把結果送回提出的 session（兩輪之間，或它用 `psr_local_wait` 等）。接著問同一個幫手也要再批准一次。不想每次都批，可以在同一頁（或從「權限」頁的「幫手自動批准」進去）設「自動批准」規則：哪個模板、哪台機器提出的、請求可以自己指定哪些資料夾；符合的請求直接開始，卡片上會標出來。只有你能批的機器永遠不自動，每台機器一天最多自動啟動 30 個。只有你能批的機器只接受「每步都問人」的模板；`/`、頂層目錄、整個家目錄、agent 的設定目錄和席位的資料夾不能指定。每個 session 同時最多 2 個請求，24 小時沒決定就過期 |
 | 檔案轉送 | 像 runpodctl：送的一方拿到一次性口令（`xfer-XXXX-XXXX-XXXX`），收的一方用口令取檔，機器之間不直連，由 Router 轉送。Paseo session 用 `psr_send_file`／`psr_receive_file`（Router 經 relay 讀寫它的工作目錄；1 MB 以內的文字檔原樣寫入，其他檔案以 base64 分塊寫入，並給合併和解碼的命令），本機 session 用 `psr_local_send_file`／`psr_local_receive_file`，人用 `psr-xfer send`／`receive`；資料夾打包成 `.tgz`。單檔 100 MB，最多等 60 分鐘，收件端確認收到後才作廢並刪檔；像機密的檔名或內容一律拒送。詳見 `docs/DEPLOYMENT.md` |
 | Provider 登入 | 總控臺「機器」的「檢查登入」（`psr_check_logins`，只有你能用）經每台 Paseo 自己的 provider 診斷，讀 Claude、Codex 有沒有登入、登入方式、方案和到期時間；只留這幾欄，帳號、路徑不留，憑證不經過 Router。結果在 `psr_list_hosts` 每台機器的 `logins`，按現在的時間判斷：正常、7 天內到期、已過期、沒有登入、最近一輪登入失敗。Codex 的診斷不回報登入，只能看到「可用」。登入過期或 7 天內到期時，機器詳情會給一行 `psr-login <機器> claude|codex` 命令和複製按鈕，在你自己的終端機執行（Claude 貼回 code；Codex 用短碼，不用貼 callback 網址），登入不經過 Router。一輪的回覆只有 `Failed to authenticate…` 這類登入錯誤時，任務記為失敗，session 標「登入失效」，直到下一輪正常完成，或檢查發現登入恢復 |
-| 交付接口 | 88 個工具、HTTP、MCP JSON HTTP、stdio bridge、CLI、OpenAPI |
+| 機器狀態 | Router 在機器上沒有 shell，Paseo 也不回報機器資源，所以每台機器跑一個很小的回報程式（`integrations/status/psr-stat.py`，Python 標準庫，Linux 和 macOS）：每分鐘把 CPU 使用率、負載、記憶體、swap、每個磁碟的容量送給 Router，不送程序清單、檔名或內容，也不接受 Router 的指令。它用「狀態憑證」（`psrs_…`，`psr_issue_stat_credential`）：只能回報那台機器的數字，其他入口一律不認，所以只有你能批的機器也可以裝。總控臺的機器卡片有 CPU、記憶體、磁碟三條量表，機器面板有每個磁碟的明細；磁碟用到 85%／95%、可用記憶體剩 10%／5%、每核負載到 1.5／3 會標出來，地圖上的名牌也會顯示。`psr_list_hosts` 的 `machine` 欄位是同一份，規劃者派工時讀得到。數字只放在 Router 的記憶體裡，3 分鐘沒回報標成過期，一天後當作沒回報過。 |
+| 交付接口 | 90 個工具、HTTP、MCP JSON HTTP、stdio bridge、CLI、OpenAPI |
 
 ## 3. CLI 和工具
 
@@ -272,9 +273,10 @@ src/store.ts               SQLite、原子 outbox、鎖、去重與保留策略
 src/paseo-adapter.ts        Paseo SDK 邊界（已在 Paseo 0.15.2 實機驗證）
 src/demo-adapter.ts         明確隔離的模擬遠端
 src/server.ts              HTTP／SSE／MCP 入口，共用 Core
-src/tools.ts               88 個工具與 OpenAPI 契約
+src/tools.ts               90 個工具與 OpenAPI 契約
 src/policy.ts              權限等級：內建規則、判級（命令拆分、路徑、憑證）、規則檢查
 src/auto-approve.ts        自動批准：設定、檢查、單一請求的判斷（按等級和任務來源）
+src/machine-status.ts      機器狀態：回報的格式和逐欄檢查、門檻、狀態憑證的型別
 src/planner.ts             規劃者：指令、可用工具、關掉的內建工具、喚醒摘要
 src/cli.ts                 CLI
 src/mcp-stdio.ts            MCP stdio → HTTP bridge
@@ -282,6 +284,7 @@ src/local.ts               本機 session：機器憑證、加入／離開、倉
 src/peer.ts                session 之間的消息：請求／回覆／通知、上限、留給 owner、回合之間送達
 src/resources.ts           共用資源（編輯器、GPU）：你登記，session 用前拿、用完還，排隊輪到時通知；消息可發給資源的佔用者
 integrations/local/        psr-local 橋接（本機 Claude Code／Codex 的 stdio MCP）、Codex hook（psr-hook.mjs）與安裝腳本
+integrations/status/       機器狀態回報程式（psr-stat.py）與安裝腳本
 src/guard.ts                程序級單活躍 Controller 鎖
 web/                       總控臺：app.js（登入、資料、事件流）、park.js（3D 總覽與右側面板）、views.js（機器、任務、權限視角）
 web/vendor/three-0.186.1/  隨包附帶的 three.js（MIT），CSP 只允許同源腳本，不連 CDN

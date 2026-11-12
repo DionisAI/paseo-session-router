@@ -33,6 +33,29 @@ export function loginAlerts(logins) {
     }
     return [...seen.values()];
 }
+// ---------- 機器狀態: what a machine's reporter last said about it (psr_list_hosts → machine): CPU, memory, disks ----------
+/** Megabytes in the unit a person reads. */
+export const sizeText = mb => mb >= 1048576 ? `${(mb / 1048576).toFixed(1)} TB` : mb >= 10240 ? `${Math.round(mb / 1024)} GB` : mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
+const alertLevel = (m, kind, mount) => m.alerts.find(a => a.kind === kind && (mount === undefined || a.mount === mount))?.level ?? 'ok';
+/** One alert in a few words, as a name tag or a list shows it. */
+export const machineAlertText = a => a.kind === 'disk' ? `磁碟 ${a.mount === '/' ? '' : `${a.mount} `}${a.pct}%` : a.kind === 'memory' ? `記憶體剩 ${a.pct}%` : `負載 ${a.perCpu}／核`;
+/** The alert a name tag shows: the worst one, disks first; null while the machine is fine, was never heard of or went quiet. */
+export const machineWorst = m => !m || m.stale ? null : m.alerts.find(a => a.level === 'danger') ?? m.alerts[0] ?? null;
+/** A machine's figures as rows of [key, name, percent or null, level, detail]: CPU, memory, swap, then each disk. Without a
+ * reporter the Router knows its own machine's load but not how busy its CPUs are: the bar then shows load for each CPU. */
+export function machineRows(m) {
+    const cpu = m.cpuPct ?? Math.min(100, Math.round(m.load[0] / m.cpus * 100)), mem = Math.round((1 - m.memory.availableMb / m.memory.totalMb) * 100);
+    const rows = [['cpu', 'CPU', cpu, alertLevel(m, 'load'), `${m.cpus} 核 · 負載 ${m.load.join(' / ')}${m.cpuPct === null ? '（沒有使用率，這條是負載）' : ''}`],
+        ['mem', '記憶體', mem, alertLevel(m, 'memory'), `可用 ${sizeText(m.memory.availableMb)}，共 ${sizeText(m.memory.totalMb)}`]];
+    if (m.swap?.totalMb) rows.push(['swap', 'Swap', Math.round(m.swap.usedMb / m.swap.totalMb * 100), 'ok', `用了 ${sizeText(m.swap.usedMb)}，共 ${sizeText(m.swap.totalMb)}`]);
+    for (const d of m.disks) rows.push([`disk:${d.mount}`, `磁碟 ${d.mount}`, d.usedPct, alertLevel(m, 'disk', d.mount), `剩 ${sizeText(d.availableMb)}，共 ${sizeText(d.totalMb)}`]);
+    return rows;
+}
+/** The three meters of a machine's card: CPU, memory, and its fullest disk. */
+export function machineMeters(m) {
+    const rows = machineRows(m), disks = rows.filter(r => r[0].startsWith('disk:')).sort((a, b) => b[2] - a[2]);
+    return [rows[0], rows[1], disks[0] ? ['disk', '磁碟', disks[0][2], disks[0][3], `${disks[0][1]}：${disks[0][4]}`] : ['disk', '磁碟', null, 'ok', '沒有磁碟數字']];
+}
 export function createViews(page, ctx) {
     const { esc, provider, nameOf, clientName, clientColor, sessionState, taskTitle, relTime, STATE_NAMES, ATTENTION, PEN, missions, missionWord, MISSION_STATE, taskCls, partState, serviceColor } = ctx;
     const SCOPE_NAMES = { read: '看進度', goal: '下目標', plan: '批准方案', submit: '直接派工', cancel: '取消任務', handoff: '交接', create: '建 session', approve: '批准權限請求', frontier: '工作筆記', bind: '綁定 worker' };
@@ -82,12 +105,16 @@ export function createViews(page, ctx) {
         if (hb) { hb.textContent = asking ? `幫手 · ${asking} 等你批准` : '幫手'; hb.classList.toggle('is-alert', asking > 0); }
         const rb = $('#pg-resources'), rs = data.resources?.resources ?? [], waiting = rs.reduce((n, r) => n + r.waiting.length, 0);
         if (rb) { rb.textContent = waiting ? `資源 · ${waiting} 排隊` : `資源${rs.length ? ` ${rs.length}` : ''}`; rb.classList.toggle('is-alert', waiting > 0); }
+        // what the machine's reporter last said: CPU, memory and its fullest disk; grey when the reports stopped
+        const meters = m => !m ? ''
+            : `<div class="h-meters${m.stale ? ' is-stale' : ''}"${m.stale ? ` title="${esc(relTime(m.reportedAt))}之後沒有再回報"` : ''}>${machineMeters(m).map(([, name, pct, level, detail]) => `<span class="h-meter is-${level}" title="${esc(detail)}"><em>${esc(name)}</em><i><b style="--w:${pct ?? 0}%"></b></i><small>${pct === null ? '—' : `${pct}%`}</small></span>`).join('')}</div>`;
         const card = h => {
             const ss = data.sessions.filter(s => s.hostId === h.id), st = ss.map(sessionState);
             const run = st.filter(x => x.cls === 'run').length, warn = st.filter(x => x.cls === 'warn' || x.cls === 'err').length, up = online(h.id);
             return `<div class="h-card" data-pick="host:${esc(h.id)}" data-host="${esc(h.id)}" tabindex="0" role="button" title="${esc(h.description ?? '')}">
               <div class="h-line"><i style="--c:${up ? '#3a9a5b' : '#9aa0a6'}"></i><b>${esc(h.label)}</b>${ctx.canEdit() ? `<button type="button" class="roster-rename always" title="改名" aria-label="改名 ${esc(h.label)}" data-rename="${esc(h.id)}">${PEN}</button>` : ''}</div>
-              <p class="h-stats"><span>${up ? `${ss.length} 個 session` : '離線'}</span>${h.localSessions?.open ? `<span>${h.localSessions.open} 個本機${h.localSessions.live < h.localSessions.open ? `（${h.localSessions.live} 在線）` : ''}</span>` : ''}${run ? `<span class="state-run">${run} 運行中</span>` : ''}${warn ? `<span class="state-warn">${warn} 需留意</span>` : ''}${loginAlerts(h.logins).map(([text, cls]) => `<span class="h-login state-${cls}">${esc(text)}</span>`).join('')}</p></div>`;
+              ${meters(h.machine)}
+              <p class="h-stats"><span>${up ? `${ss.length} 個 session` : '離線'}</span>${h.localSessions?.open ? `<span>${h.localSessions.open} 個本機${h.localSessions.live < h.localSessions.open ? `（${h.localSessions.live} 在線）` : ''}</span>` : ''}${run ? `<span class="state-run">${run} 運行中</span>` : ''}${warn ? `<span class="state-warn">${warn} 需留意</span>` : ''}${loginAlerts(h.logins).map(([text, cls]) => `<span class="h-login state-${cls}">${esc(text)}</span>`).join('')}${!h.machine ? '<span>沒有狀態回報</span>' : h.machine.stale ? `<span>狀態回報停了（${esc(relTime(h.machine.reportedAt))}）</span>` : ''}</p></div>`;
         };
         $('#pg-host-list').innerHTML = `<div class="h-card h-all" data-host="all" tabindex="0" role="button"><div class="h-line"><b>全部機器</b></div><p class="h-stats"><span>${data.sessions.length} 個 session</span></p></div>${hosts.map(card).join('')}`;
         $('#pg-host-list').querySelectorAll('[data-host]').forEach(el => {

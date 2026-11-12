@@ -36,7 +36,9 @@ codex_server() { # $1 add|remove, $2 node, $3 bridge
     [ -f "$CODEX_CONFIG" ] || { [ "$1" = add ] && : > "$CODEX_CONFIG"; } || return 0
     cp "$CODEX_CONFIG" "$CODEX_CONFIG.psr-bak"
     python_edit "$CODEX_CONFIG" "$@" <<'EOF'
-import re, sys, tomllib
+import re, sys
+try: import tomllib
+except ImportError: tomllib = None  # Python before 3.11 (Ubuntu 22.04 has 3.10): written without the parse check below
 path, mode = sys.argv[1], sys.argv[2]
 text = open(path).read()
 # drop an earlier [mcp_servers.router] table (and its subtables), then add ours
@@ -45,7 +47,8 @@ if mode == 'add':
     node, bridge = sys.argv[3], sys.argv[4]
     q = lambda s: '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
     text += f'\n[mcp_servers.router]\ncommand = {q(node)}\nargs = [{q(bridge)}]\ndefault_tools_approval_mode = "approve"\n'
-tomllib.loads(text)  # refuse to write a config Codex could not read
+if tomllib: tomllib.loads(text)  # refuse to write a config Codex could not read
+else: print('  (this python3 is older than 3.11: the Codex config was not parsed before writing; the backup is next to it)')
 open(path, 'w').write(text)
 EOF
 }
@@ -55,7 +58,9 @@ codex_hooks() { # $1 add|remove, $2 node, $3 hook script. Our hook groups are fo
     [ -f "$CODEX_CONFIG" ] || { [ "$1" = add ] && : > "$CODEX_CONFIG"; } || return 0
     cp "$CODEX_CONFIG" "$CODEX_CONFIG.psr-bak"
     python_edit "$CODEX_CONFIG" "$@" <<'EOF'
-import re, sys, tomllib
+import re, sys
+try: import tomllib
+except ImportError: tomllib = None  # Python before 3.11 (Ubuntu 22.04 has 3.10): written without the parse check below
 path, mode = sys.argv[1], sys.argv[2]
 EVENTS = ('SessionStart', 'UserPromptSubmit', 'Stop')
 header = re.compile(r'^\s*(\[\[?)\s*([^\]]+?)\s*\]\]?\s*(#.*)?$')
@@ -84,8 +89,12 @@ if mode == 'add':
     sh = lambda s: "'" + s.replace("'", "'\\''") + "'"
     for e in EVENTS:
         text += f'\n[[hooks.{e}]]\n# psr-local: messages from other sessions, between turns only (integrations/local/install.sh --hooks)\n\n[[hooks.{e}.hooks]]\ncommand = {q(sh(node) + " " + sh(hook) + " " + e)}\ntimeout = 5\ntype = "command"\n'
-data = tomllib.loads(text)  # refuse to write a config Codex could not read
-found = [e for e in EVENTS for g in data.get('hooks', {}).get(e, []) for h in g.get('hooks', []) if 'psr-hook.mjs' in h.get('command', '')]
+if tomllib:
+    data = tomllib.loads(text)  # refuse to write a config Codex could not read
+    found = [e for e in EVENTS for g in data.get('hooks', {}).get(e, []) for h in g.get('hooks', []) if 'psr-hook.mjs' in h.get('command', '')]
+else:  # without a parser: our hooks by their command lines, which end in the event's name
+    found = [e for e in EVENTS for l in text.splitlines() if l.startswith('command = ') and 'psr-hook.mjs' in l and l.rstrip().endswith(f' {e}"')]
+    print('  (this python3 is older than 3.11: the Codex config was not parsed before writing; the backup is next to it)')
 assert found == (list(EVENTS) if mode == 'add' else []), found
 open(path, 'w').write(text)
 EOF

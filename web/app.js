@@ -65,6 +65,9 @@ function load(reconnect = false) {
 // would be 9 tool calls a second against the entry's 600-a-minute limit (shared by every tab on this token). Reported
 // changes wait until REFRESH_GAP_MS after the last load and fold into one refresh; actions still load at once.
 const REFRESH_GAP_MS = 3000;
+// A machine's figures (psr_list_hosts) arrive once a minute and report no change on the stream: while the page is in view,
+// read again at least that often.
+setInterval(() => { if (token && !document.hidden && !inflight && Date.now() - lastLoad >= 60000) void load(); }, 15000);
 function refresh() { refreshTimer ??= setTimeout(() => { refreshTimer = null; if (token)
     void load(); }, Math.max(0, lastLoad + REFRESH_GAP_MS - Date.now())); }
 async function fetchAll(reconnect) {
